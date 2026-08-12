@@ -627,6 +627,17 @@ const EMAILJS_PUBLIC_KEY = 'fx16EmMxOb8K_BR2z';
 // grefacciones@zontesmexico.com, con atencionpostventa@zontesmexico.com en Cc).
 const EMAILJS_TEMPLATE_ID_REFACCIONES = 'template_n798gmg';
 
+// Plantilla para avisar a Postventa cuando un Distribuidor o una tienda Retail
+// levanta una solicitud de activación o un reporte de falla/garantía. Debe
+// configurarse en el dashboard de EmailJS (duplicar cualquier plantilla
+// existente que use las mismas variables — tipo_evento, nombre_cliente,
+// codigo_cliente, modelo_moto, telefono_cliente, detalle, fecha_evento — y
+// cambiar el "To Email" a atencionpostventa@zontesmexico.com, con
+// gerenciapostventa@ivo-dimao.com y gerenciakam@zontesmexico.com en Cc).
+// Mientras no se configure el ID real aquí, notifySolicitudSocio() no envía
+// nada (solo deja un aviso en consola) para no romper el flujo de la solicitud.
+const EMAILJS_TEMPLATE_ID_SOLICITUD_SOCIO = '';
+
 // Envío genérico vía API REST de EmailJS. Devuelve true/false según el resultado
 // y nunca lanza excepción hacia quien lo llama (no debe romper el flujo principal).
 async function sendEmailJS(templateId, templateParams){
@@ -719,6 +730,50 @@ async function notifySolicitudCompra(s){
     fecha_evento: new Date().toLocaleString('es-MX'),
   });
   if(ok) logEmailSent('Nueva solicitud de compra de refacciones');
+  return ok;
+}
+
+// Aviso a Postventa cuando un Distribuidor o una tienda Retail levanta una
+// solicitud de activación o un reporte de falla/garantía — desglosa la
+// motocicleta, la tienda de origen, el vendedor que solicita, su número de
+// contacto y (solo para activaciones) la fecha máxima de activación.
+async function notifySolicitudSocio(s, origen){
+  if(!EMAILJS_TEMPLATE_ID_SOLICITUD_SOCIO){
+    console.warn('EMAILJS_TEMPLATE_ID_SOLICITUD_SOCIO no configurado; no se envió el correo de la solicitud a Postventa.');
+    return false;
+  }
+  const esActivacion = s.tipo === 'activacion';
+  const tipoLegible = esActivacion ? 'Solicitud de activación' : 'Reporte de falla / garantía';
+  const origenLegible = s.origen_tipo === 'distribuidor' ? 'Distribuidor' : 'Tienda retail';
+  const cadenaLinea = (s.origen_tipo === 'retail' && origen && origen.cadena_nombre) ? `\nCadena: ${origen.cadena_nombre}` : '';
+  const motoLineas = [
+    `Modelo: ${s.moto_modelo || ''}`,
+    esActivacion ? `Año: ${s.moto_anio || ''}` : null,
+    `N° de serie (VIN): ${s.moto_serie || ''}`,
+  ].filter(Boolean).join('\n');
+  const bloques = [
+    `Folio: ${s.id}`,
+    `${origenLegible}: ${s.origen_nombre} (${s.origen_id})${cadenaLinea}`,
+    `Vendedor que solicita: ${s.vendedor || ''}\nNúmero de contacto: ${s.contacto || ''}`,
+    motoLineas,
+    esActivacion
+      ? `Fecha máxima para la activación: ${fmtDate(s.fecha_entrega)}`
+      : `Fecha máxima para la activación: No aplica (reporte de falla/garantía)`,
+  ];
+  if(!esActivacion && s.descripcion){
+    bloques.push(`Descripción de la falla/daño:\n${s.descripcion}`);
+  }
+  const detalle = bloques.join('\n\n');
+  const ok = await sendEmailJS(EMAILJS_TEMPLATE_ID_SOLICITUD_SOCIO, {
+    tipo_evento: `${tipoLegible} — ${s.origen_nombre}`,
+    nombre_cliente: s.origen_nombre || '',
+    codigo_cliente: s.id || '',
+    modelo_moto: s.moto_modelo || '',
+    telefono_cliente: s.contacto || '',
+    detalle,
+    fecha_evento: new Date().toLocaleString('es-MX'),
+  });
+  if(ok) logEmailSent(tipoLegible + ' (socio comercial)');
   return ok;
 }
 
@@ -2925,6 +2980,7 @@ function renderSolicitarActivacion(origenTipo, origen){
       </div>
       <div class="field"><label>Fecha de entrega estimada</label><input required name="fecha_entrega" type="date"></div>
       <div class="field"><label>Vendedor que solicita</label><input required name="vendedor" placeholder="Nombre del vendedor"></div>
+      <div class="field"><label>Número de contacto</label><input required name="contacto" type="tel" placeholder="Teléfono del vendedor"></div>
       <button type="submit" class="btn btn-primary btn-block" id="activacion-submit-btn">Enviar solicitud</button>
       <p id="activacion-error" style="color:var(--danger); font-size:12.5px; margin-top:10px; display:none;"></p>
     </form>
@@ -2940,7 +2996,7 @@ function bindSolicitarActivacion(origenTipo, origen){
     btn.disabled = true; btn.textContent = 'Enviando...';
     try{
       const id = genSolicitudId('activacion');
-      await createSolicitud({
+      const solicitud = {
         id,
         tipo: 'activacion',
         origen_tipo: origenTipo,
@@ -2951,8 +3007,11 @@ function bindSolicitarActivacion(origenTipo, origen){
         moto_serie: f.serie.value.trim().toUpperCase(),
         fecha_entrega: f.fecha_entrega.value,
         vendedor: f.vendedor.value.trim(),
+        contacto: f.contacto.value.trim(),
         status: 'recibida',
-      });
+      };
+      await createSolicitud(solicitud);
+      notifySolicitudSocio(solicitud, origen).catch(err => console.error('No se pudo enviar el correo de la solicitud:', err));
       toast('Solicitud de activación enviada.', 'ok');
       state.socioSub = 'mis-solicitudes';
       render();
@@ -2982,6 +3041,8 @@ function renderReportarFalla(origenTipo, origen){
       <div class="field"><label>N° de serie (VIN)</label><input required name="serie" class="mono" style="text-transform:uppercase;"></div>
       <div class="field"><label>Descripción de la falla / daño</label><textarea required name="descripcion" placeholder="Describe qué se encontró..."></textarea></div>
       <div class="field"><label>Evidencia — foto o video</label><input required type="file" name="evidencia" accept="image/*,video/*" multiple></div>
+      <div class="field"><label>Vendedor que solicita</label><input required name="vendedor" placeholder="Nombre del vendedor"></div>
+      <div class="field"><label>Número de contacto</label><input required name="contacto" type="tel" placeholder="Teléfono del vendedor"></div>
 
       <div class="divider"></div>
       <label style="display:block; margin-bottom:10px;">Refacciones solicitadas (opcional)</label>
@@ -3050,7 +3111,7 @@ function bindReportarFalla(origenTipo, origen){
       const refacciones = (state.socioFallaRefacciones || [])
         .filter(r => r.numero_parte.trim() || r.nombre.trim())
         .map(r => ({ numero_parte: r.numero_parte.trim(), nombre: r.nombre.trim(), cantidad: Number(r.cantidad)||1, decision: null }));
-      await createSolicitud({
+      const solicitud = {
         id,
         tipo: 'falla_garantia',
         origen_tipo: origenTipo,
@@ -3061,8 +3122,12 @@ function bindReportarFalla(origenTipo, origen){
         descripcion: f.descripcion.value.trim(),
         evidencia: urls,
         refacciones,
+        vendedor: f.vendedor.value.trim(),
+        contacto: f.contacto.value.trim(),
         status: 'recibida',
-      });
+      };
+      await createSolicitud(solicitud);
+      notifySolicitudSocio(solicitud, origen).catch(err => console.error('No se pudo enviar el correo de la solicitud:', err));
       toast('Reporte enviado.', 'ok');
       state.socioSub = 'mis-solicitudes';
       state.socioFallaRefacciones = null;
