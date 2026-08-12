@@ -9138,9 +9138,17 @@ function closeHelpModal(){
 function helpModalEscHandler(e){
   if(e.key === 'Escape') closeHelpModal();
 }
+// URL base pública donde vive esta herramienta (GitHub Pages). Los manuales
+// se cargan desde aquí, en vez de con una ruta relativa ("manuals/archivo.html"),
+// para que abran correctamente sin importar cómo se haya abierto app.html —
+// desde la URL real, desde una copia compartida por WhatsApp/correo, desde un
+// ZIP descomprimido, etc. Una ruta relativa solo funciona cuando el navegador
+// puede ver la carpeta "manuals/" junto al archivo, lo cual falla en copias
+// locales (p.ej. content://... en Android). Actualizar si el sitio se muda.
+const APP_BASE_URL = 'https://letbepv.github.io/plataformapostventa/';
 function openHelpModal(){
   const manual = currentHelpManual();
-  const manualUrl = `manuals/${manual.file}`;
+  const manualUrl = `${APP_BASE_URL}manuals/${manual.file}`;
   const wrap = document.getElementById('help-modal-wrap');
   if(!wrap) return;
   wrap.innerHTML = `
