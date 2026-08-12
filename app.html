@@ -9074,6 +9074,21 @@ async function render(){
   logoImg.src = OFFICIAL_LOGO_URL;
 })();
 
+// Cuando la herramienta se carga dentro de un <iframe> (p.ej. incrustada en
+// la página oficial de Letbe para el público), se oculta el botón "Panel
+// admin" del menú — el acceso administrativo queda reservado para cuando el
+// staff entra directo a la URL de la herramienta (fuera del iframe). No es
+// una medida de seguridad (el panel sigue protegido por su propio código de
+// acceso), solo evita mostrarle ese botón a cualquier visitante público.
+(function hideAdminButtonInIframe(){
+  let inIframe = false;
+  try{ inIframe = window.self !== window.top; }catch(e){ inIframe = true; }
+  if(inIframe){
+    const adminBtn = document.querySelector('#nav button[data-view="admin"]');
+    if(adminBtn) adminBtn.remove();
+  }
+})();
+
 document.querySelectorAll('#nav button').forEach(b=>{
   b.addEventListener('click', ()=>{
     state.view = b.dataset.view;
