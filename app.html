@@ -236,9 +236,15 @@
     background:#141414; color:var(--yellow); border-radius:100px; padding:2px 9px; font-size:12px;
   }
 
-  /* ---------- Ayuda: botón flotante + modal con el manual de usuario ---------- */
+  /* ---------- Ayuda: botón flotante + modal con el manual de usuario ----------
+     Se posiciona arriba a la derecha (en vez de abajo a la izquierda) porque al
+     incrustarse en la página oficial de Letbe la parte inferior puede quedar
+     fuera del área visible del iframe. El "top" real se calcula por JS (ver
+     positionHelpFab más abajo) para quedar siempre justo debajo del header y
+     nunca encimarse con el menú de navegación; --help-fab-top es el valor de
+     respaldo mientras carga o si JS no puede medir el header. ---------- */
   .help-fab{
-    position:fixed; bottom:24px; left:24px; z-index:90;
+    position:fixed; top:var(--help-fab-top, 88px); right:16px; z-index:90;
     background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:100px;
     padding:12px 18px 12px 14px; font-family:'Inter',sans-serif; font-weight:800; font-size:13px;
     box-shadow:0 8px 24px rgba(20,20,30,0.25); cursor:pointer;
@@ -9200,6 +9206,25 @@ function openHelpModal(){
 (function bindHelpFab(){
   const fab = document.getElementById('help-fab');
   if(fab) fab.addEventListener('click', openHelpModal);
+})();
+
+// Calcula la posición vertical del botón flotante "Ayuda" para que quede
+// siempre justo debajo del header (nunca encimado con el menú de navegación),
+// tanto en la app directa como incrustada (?embed=1) y en cualquier ancho de
+// pantalla. Se recalcula al cargar, al cambiar el tamaño de la ventana y al
+// abrir/cerrar el menú móvil (por si el navegador reflowea el header).
+(function positionHelpFab(){
+  function update(){
+    const header = document.querySelector('header');
+    if(!header) return;
+    const h = header.getBoundingClientRect().height;
+    document.documentElement.style.setProperty('--help-fab-top', (h + 12) + 'px');
+  }
+  update();
+  window.addEventListener('resize', update);
+  window.addEventListener('load', update);
+  const navToggle = document.getElementById('nav-toggle');
+  if(navToggle) navToggle.addEventListener('click', ()=> setTimeout(update, 0));
 })();
 
 render();
