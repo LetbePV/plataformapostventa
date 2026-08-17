@@ -792,7 +792,7 @@ async function notifySolicitudSocio(s, origen){
     `Vendedor que solicita: ${s.vendedor || ''}\nNúmero de contacto: ${s.contacto || ''}`,
     motoLineas,
     esActivacion
-      ? `Fecha máxima para la activación: ${fmtDate(s.fecha_entrega)}`
+      ? `Fecha de entrega a tienda: ${fmtDate(s.fecha_entrega_tienda)}\nFecha de entrega a cliente (fecha máxima para la activación): ${fmtDate(s.fecha_entrega)}`
       : `Fecha máxima para la activación: No aplica (reporte de falla/garantía)`,
   ];
   if(!esActivacion && s.descripcion){
@@ -3013,7 +3013,10 @@ function renderSolicitarActivacion(origenTipo, origen){
         <div class="field"><label>Año</label><input required name="anio" type="number" min="2000" max="2100"></div>
         <div class="field"><label>N° de serie (VIN)</label><input required name="serie" class="mono" style="text-transform:uppercase;"></div>
       </div>
-      <div class="field"><label>Fecha de entrega estimada</label><input required name="fecha_entrega" type="date"></div>
+      <div class="grid2">
+        <div class="field"><label>Fecha de entrega a tienda</label><input required name="fecha_entrega_tienda" type="date"></div>
+        <div class="field"><label>Fecha de entrega a cliente</label><input required name="fecha_entrega" type="date"></div>
+      </div>
       <div class="field"><label>Vendedor que solicita</label><input required name="vendedor" placeholder="Nombre del vendedor"></div>
       <div class="field"><label>Número de contacto</label><input required name="contacto" type="tel" placeholder="Teléfono del vendedor"></div>
       <button type="submit" class="btn btn-primary btn-block" id="activacion-submit-btn">Enviar solicitud</button>
@@ -3027,6 +3030,21 @@ function bindSolicitarActivacion(origenTipo, origen){
   document.getElementById('activacion-form').addEventListener('submit', async (e)=>{
     e.preventDefault();
     const f = e.target;
+    const errEl = document.getElementById('activacion-error');
+    // Candado: no se puede enviar la solicitud si falta cualquier dato, en
+    // particular el nombre y el teléfono del vendedor. El atributo "required"
+    // del HTML ya bloquea campos vacíos, pero no detecta un campo con solo
+    // espacios en blanco (ej. el usuario teclea un espacio para "pasar" el
+    // required) — por eso se valida también aquí con .trim().
+    const camposCompletos = f.anio.value.trim() && f.serie.value.trim()
+      && f.fecha_entrega_tienda.value.trim() && f.fecha_entrega.value.trim()
+      && f.vendedor.value.trim() && f.contacto.value.trim();
+    if(!camposCompletos){
+      errEl.textContent = 'Todos los datos son requeridos para poder enviar la solicitud.';
+      errEl.style.display = 'block';
+      return;
+    }
+    errEl.style.display = 'none';
     const btn = document.getElementById('activacion-submit-btn');
     btn.disabled = true; btn.textContent = 'Enviando...';
     try{
@@ -3040,6 +3058,7 @@ function bindSolicitarActivacion(origenTipo, origen){
         moto_modelo: f.modelo.value,
         moto_anio: f.anio.value,
         moto_serie: f.serie.value.trim().toUpperCase(),
+        fecha_entrega_tienda: f.fecha_entrega_tienda.value,
         fecha_entrega: f.fecha_entrega.value,
         vendedor: f.vendedor.value.trim(),
         contacto: f.contacto.value.trim(),
@@ -5126,7 +5145,7 @@ async function bindSolicitudesAsignadas(taller){
           </div>
           <div style="font-size:12px; color:var(--text-muted); margin-top:6px;">${esc(s.moto_modelo)} · VIN: ${esc(s.moto_serie||'—')}</div>
           <div style="font-size:12px; color:var(--text-faint); margin-top:4px;">Solicitado por: ${esc(s.origen_nombre)}</div>
-          ${esActivacion ? `<div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Entrega: ${s.fecha_entrega||'—'} · Vendedor: ${esc(s.vendedor||'—')}</div>` : `<div style="color:var(--text-muted); font-size:12.5px; margin-top:6px; max-width:480px;">${esc(s.descripcion||'')}</div>`}
+          ${esActivacion ? `<div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Entrega a tienda: ${s.fecha_entrega_tienda||'—'} · Entrega a cliente: ${s.fecha_entrega||'—'} · Vendedor: ${esc(s.vendedor||'—')}</div>` : `<div style="color:var(--text-muted); font-size:12.5px; margin-top:6px; max-width:480px;">${esc(s.descripcion||'')}</div>`}
         </div>
         <div style="text-align:right;">
           <span class="badge ${solicitudStatusInfo(s.status).badge}">${solicitudStatusInfo(s.status).label}</span>
@@ -5228,7 +5247,8 @@ function buildSolicitudFinalizadaPDF(s){
 
   if(s.tipo === 'activacion'){
     section('Detalle de la activación');
-    line(`Fecha de entrega: ${s.fecha_entrega||'—'}`);
+    line(`Fecha de entrega a tienda: ${s.fecha_entrega_tienda||'—'}`);
+    line(`Fecha de entrega a cliente: ${s.fecha_entrega||'—'}`);
     line(`Vendedor que solicita: ${s.vendedor||'—'}`);
     y += 3;
   }else{
@@ -8035,7 +8055,7 @@ async function renderSolicitudesAdminList(solicitudes){
             <span style="color:var(--text-faint); font-size:12px;">· ${origenLabel[s.origen_tipo]}: ${esc(s.origen_nombre)}</span>
           </div>
           <div style="font-size:12px; color:var(--text-muted); margin-top:6px;">${esc(s.moto_modelo)} · VIN: ${esc(s.moto_serie||'—')} · ${fmtDate((s.created_at||'').slice(0,10))}</div>
-          ${s.tipo==='activacion' ? `<div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Entrega: ${s.fecha_entrega||'—'} · Vendedor: ${esc(s.vendedor||'—')}</div>` : ''}
+          ${s.tipo==='activacion' ? `<div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Entrega a tienda: ${s.fecha_entrega_tienda||'—'} · Entrega a cliente: ${s.fecha_entrega||'—'} · Vendedor: ${esc(s.vendedor||'—')}</div>` : ''}
           ${s.tipo==='falla_garantia' ? `<div style="color:var(--text-muted); font-size:12.5px; margin-top:6px; max-width:480px;">${esc(s.descripcion||'')}</div>` : ''}
           ${evidenciaHtml ? `<div style="margin-top:8px;">${evidenciaHtml}</div>` : ''}
           ${refaccionesHtml}
