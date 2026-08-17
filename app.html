@@ -1421,6 +1421,7 @@ async function getTiendaRetail(id, password){
 const SOLICITUD_STATUSES = [
   {key:'recibida',   label:'Recibida',    badge:'badge-pending'},
   {key:'asignada',   label:'Asignada',    badge:'badge-yellow'},
+  {key:'activada',   label:'Activada',    badge:'badge-success'}, // solo activación; no pasa por taller
   {key:'finalizada', label:'Finalizada',  badge:'badge-success'},
 ];
 function solicitudStatusInfo(key){
@@ -1496,6 +1497,190 @@ function countdownBadge(fechaLimite){
   return `<span class="badge badge-success">${h.toFixed(0)}h restantes</span>`;
 }
 
+/* ---- Activación: estatus Recibida -> Asignada (a un técnico) -> Activada
+   (día y hora de término), operado por Postventa y/o el Jefe de taller.
+   Semáforo por tiempo transcurrido sin activar.
+   Nota: se pidieron los umbrales "48h" y "7h", pero 7h es MENOR que 48h — si se usan
+   tal cual (7h en rojo, 48h en amarillo) el badge pasaría de rojo a amarillo con el
+   tiempo, lo que se ve como "mejorando" cuando en realidad sigue empeorando. Para que
+   el semáforo escale de forma consistente (más tiempo sin activar = más grave), aquí
+   el umbral MENOR (7h) dispara la alerta amarilla y el MAYOR (48h) la roja. Son
+   constantes fáciles de ajustar si el criterio real es otro.
+*/
+const ACTIVACION_ALERTA_AMARILLA_HORAS = 7;
+const ACTIVACION_ALERTA_ROJA_HORAS = 48;
+function semaforoActivacion(s){
+  if(s.status === 'activada'){
+    return `<span class="badge badge-success">Activada · ${s.fecha_activacion ? new Date(s.fecha_activacion).toLocaleString('es-MX') : '—'}</span>`;
+  }
+  if(!s.created_at) return '';
+  const h = (Date.now() - new Date(s.created_at).getTime()) / (60*60*1000);
+  const etiqueta = s.status === 'asignada' ? `Asignada · ${esc(s.tecnico_asignado||'—')}` : 'Sin activar';
+  if(h >= ACTIVACION_ALERTA_ROJA_HORAS) return `<span class="badge badge-danger">${etiqueta} · ${Math.floor(h)}h</span>`;
+  if(h >= ACTIVACION_ALERTA_AMARILLA_HORAS) return `<span class="badge badge-yellow">${etiqueta} · ${Math.floor(h)}h</span>`;
+  return `<span class="badge badge-pending">${etiqueta}</span>`;
+}
+// Paso 1: el Jefe de taller (o Postventa) asigna un técnico -> status "asignada".
+async function asignarTecnicoSolicitud(id, tecnico){
+  await updateSolicitud(id, {
+    tecnico_asignado: tecnico,
+    fecha_asignacion_tecnico: new Date().toISOString(),
+    status: 'asignada',
+  });
+}
+// Paso 2 (independiente del paso 1): se registra el día/hora de término -> status "activada".
+async function activarSolicitud(id, fechaActivacionISO){
+  await updateSolicitud(id, { status: 'activada', fecha_activacion: fechaActivacionISO });
+}
+// Control de estatus compartido entre el panel de Postventa y el del Jefe de taller.
+function renderActivacionStatusControl(s){
+  if(s.status === 'activada'){
+    return `
+      <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border); font-size:12px; color:var(--text-muted);">
+        <div>Técnico: <b style="color:var(--text);">${esc(s.tecnico_asignado||'—')}</b></div>
+        <div>Asignado: ${s.fecha_asignacion_tecnico ? new Date(s.fecha_asignacion_tecnico).toLocaleString('es-MX') : '—'}</div>
+        <div>Activada (término): ${s.fecha_activacion ? new Date(s.fecha_activacion).toLocaleString('es-MX') : '—'}</div>
+      </div>`;
+  }
+  if(s.status === 'asignada'){
+    const ahoraLocal = new Date(Date.now() - new Date().getTimezoneOffset()*60000).toISOString().slice(0,16);
+    return `
+      <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
+        <div style="font-size:12px; color:var(--text-muted); margin-bottom:8px;">
+          Técnico asignado: <b style="color:var(--text);">${esc(s.tecnico_asignado||'—')}</b> · Asignado: ${s.fecha_asignacion_tecnico ? new Date(s.fecha_asignacion_tecnico).toLocaleString('es-MX') : '—'}
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+          <label style="font-size:11.5px; color:var(--text-faint);">Día y hora de término:</label>
+          <input type="datetime-local" class="sol-termino-fecha" data-sol="${s.id}" value="${ahoraLocal}">
+          <button class="btn btn-yellow btn-sm sol-marcar-activada" data-sol="${s.id}">Marcar como activada</button>
+        </div>
+        <p class="sol-activacion-error" data-sol="${s.id}" style="color:var(--danger); font-size:11.5px; margin-top:6px; display:none;"></p>
+      </div>`;
+  }
+  // status === 'recibida'
+  return `
+    <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border); display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+      <input type="text" class="sol-tecnico-input" data-sol="${s.id}" placeholder="Nombre del técnico">
+      <button class="btn btn-yellow btn-sm sol-asignar-tecnico" data-sol="${s.id}">Asignar técnico</button>
+      <p class="sol-activacion-error" data-sol="${s.id}" style="color:var(--danger); font-size:11.5px; width:100%; margin:0; display:none;"></p>
+    </div>`;
+}
+// onSent: callback async que vuelve a cargar/pintar la lista tras asignar o activar.
+function bindActivacionStatusControls(container, onSent){
+  container.querySelectorAll('.sol-asignar-tecnico').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.sol;
+      const input = container.querySelector(`.sol-tecnico-input[data-sol="${id}"]`);
+      const errEl = container.querySelector(`.sol-activacion-error[data-sol="${id}"]`);
+      const tecnico = input.value.trim();
+      errEl.style.display = 'none';
+      if(!tecnico){ errEl.textContent = 'Escribe el nombre del técnico.'; errEl.style.display = 'block'; return; }
+      btn.disabled = true; btn.textContent = 'Asignando...';
+      try{
+        await asignarTecnicoSolicitud(id, tecnico);
+        toast('Técnico asignado.', 'ok');
+        await onSent();
+      }catch(err){
+        console.error(err);
+        errEl.textContent = 'No se pudo asignar. Intenta de nuevo.'; errEl.style.display = 'block';
+        btn.disabled = false; btn.textContent = 'Asignar técnico';
+      }
+    });
+  });
+  container.querySelectorAll('.sol-marcar-activada').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.sol;
+      const fechaInput = container.querySelector(`.sol-termino-fecha[data-sol="${id}"]`);
+      const errEl = container.querySelector(`.sol-activacion-error[data-sol="${id}"]`);
+      errEl.style.display = 'none';
+      if(!fechaInput.value){ errEl.textContent = 'Selecciona el día y hora de término.'; errEl.style.display = 'block'; return; }
+      btn.disabled = true; btn.textContent = 'Guardando...';
+      try{
+        await activarSolicitud(id, new Date(fechaInput.value).toISOString());
+        toast('Solicitud marcada como activada.', 'ok');
+        await onSent();
+      }catch(err){
+        console.error(err);
+        errEl.textContent = 'No se pudo guardar. Intenta de nuevo.'; errEl.style.display = 'block';
+        btn.disabled = false; btn.textContent = 'Marcar como activada';
+      }
+    });
+  });
+}
+
+/* ---- Comentarios bidireccionales (Postventa/staff <-> Distribuidor/Retail) ----
+   Aplica a cualquier tipo de solicitud (activación y falla/garantía). Se guardan
+   como arreglo jsonb en la misma fila; cada entrada: {rol, autor, texto, fecha}. */
+async function addComentarioSolicitud(id, rol, autor, texto){
+  const actual = await getSolicitud(id);
+  const comentarios = (actual && actual.comentarios) || [];
+  comentarios.push({
+    rol,   // 'staff' | 'socio'
+    autor: autor || (rol === 'staff' ? 'Postventa' : 'Socio comercial'),
+    texto,
+    fecha: new Date().toISOString(),
+  });
+  await updateSolicitud(id, { comentarios });
+  return comentarios;
+}
+// Bloque de comentarios compartido entre el panel de staff y el de socios comerciales.
+// "abiertos" es un Set con los ids de solicitud cuyo <details> debe quedar expandido
+// (para que no se colapse al recargar la lista justo después de enviar un comentario).
+function renderComentariosBlock(s, abiertos){
+  const comentarios = s.comentarios || [];
+  const listHtml = comentarios.length
+    ? comentarios.map(c => `
+        <div style="padding:8px 10px; border-radius:8px; margin-bottom:6px; background:${c.rol==='staff' ? 'var(--surface-3)' : 'var(--surface-2)'};">
+          <div style="font-size:11px; color:var(--text-faint); margin-bottom:2px;">
+            <b>${c.rol==='staff' ? '🛠️ ' + esc(c.autor||'Postventa') : '🏬 ' + esc(c.autor||'Socio comercial')}</b> · ${new Date(c.fecha).toLocaleString('es-MX')}
+          </div>
+          <div style="font-size:12.5px; color:var(--text); white-space:pre-wrap;">${esc(c.texto)}</div>
+        </div>`).join('')
+    : `<div style="font-size:12px; color:var(--text-faint);">Sin comentarios todavía.</div>`;
+  return `
+    <details class="sol-comentarios-details" data-sol="${s.id}" style="margin-top:10px;" ${abiertos && abiertos.has(s.id) ? 'open' : ''}>
+      <summary style="cursor:pointer; font-size:12px; color:var(--text-muted); font-weight:700;">💬 Comentarios (${comentarios.length})</summary>
+      <div style="margin-top:8px;">
+        ${listHtml}
+        <div style="display:flex; gap:6px; margin-top:8px;">
+          <input type="text" class="sol-comentario-input" data-sol="${s.id}" placeholder="Escribe un comentario..." style="flex:1;">
+          <button class="btn btn-ghost btn-sm sol-comentario-btn" data-sol="${s.id}">Enviar</button>
+        </div>
+        <p class="sol-comentario-error" data-sol="${s.id}" style="color:var(--danger); font-size:11.5px; margin-top:6px; display:none;"></p>
+      </div>
+    </details>`;
+}
+// rol/autor: quién está comentando desde este panel ('staff'/'Postventa' o 'socio'/nombre de la tienda-distribuidor).
+// abiertos: mismo Set que renderComentariosBlock, se actualiza aquí para mantener abierto el hilo tras enviar.
+// onSent: callback async que vuelve a cargar y pintar la lista (para reflejar el comentario nuevo).
+function bindComentariosBlocks(container, rol, autor, abiertos, onSent){
+  container.querySelectorAll('.sol-comentarios-details').forEach(det=>{
+    det.addEventListener('toggle', ()=>{
+      const id = det.dataset.sol;
+      if(det.open) abiertos.add(id); else abiertos.delete(id);
+    });
+  });
+  container.querySelectorAll('.sol-comentario-btn').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.sol;
+      const input = container.querySelector(`.sol-comentario-input[data-sol="${id}"]`);
+      const errEl = container.querySelector(`.sol-comentario-error[data-sol="${id}"]`);
+      const texto = input.value.trim();
+      if(!texto) return;
+      btn.disabled = true;
+      try{
+        await addComentarioSolicitud(id, rol, autor, texto);
+        abiertos.add(id);
+        await onSent();
+      }catch(err){
+        console.error(err);
+        if(errEl){ errEl.textContent = 'No se pudo enviar el comentario. Intenta de nuevo.'; errEl.style.display = 'block'; }
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
 /* ---- Cuentas del equipo de Refacciones (usuario + contraseña propios,
    separados del código general de staff) ---- */
 async function getAllStaffRefacciones(){
@@ -1530,6 +1715,46 @@ async function createStaffRefaccion(s){
 }
 async function updateStaffRefaccionActivo(usuario, activo){
   await sbRequest('staff_refacciones?usuario=eq.' + encodeURIComponent(usuario), {
+    method:'PATCH',
+    headers:{'Prefer':'return=representation'},
+    body: JSON.stringify({ activo }),
+  });
+}
+
+/* ---- Cuentas del Jefe de taller (usuario + contraseña propios, acceso al
+   panel exclusivo de activaciones) ---- */
+async function getAllStaffJefeTaller(){
+  try{
+    const rows = await sbRequestAllPages('staff_jefe_taller?select=*&order=created_at.desc');
+    return rows;
+  }catch(e){ console.error(e); return null; }
+}
+async function getStaffJefeTaller(usuario, password){
+  try{
+    const rows = await sbRequest('staff_jefe_taller?usuario=eq.' + encodeURIComponent(usuario) + '&select=*', { method:'GET' });
+    if(!rows || !rows.length) return { error: 'notfound' };
+    const s = rows[0];
+    if(!s.activo) return { error: 'inactive' };
+    if(s.password !== password) return { error: 'badpassword' };
+    return { staff: s };
+  }catch(e){
+    console.error(e);
+    const msg = (e && e.message) || '';
+    if(msg.includes("Could not find the table") || msg.includes('relation') || msg.includes('does not exist')){
+      return { error: 'connection', detail: 'La tabla "staff_jefe_taller" no existe todavía en Supabase. Corre el SQL de configuración antes de continuar.' };
+    }
+    return { error: 'connection', detail: msg };
+  }
+}
+async function createStaffJefeTaller(s){
+  await sbRequest('staff_jefe_taller', {
+    method:'POST',
+    headers:{'Prefer':'return=representation'},
+    body: JSON.stringify(s),
+  });
+}
+async function updateStaffJefeTallerActivo(usuario, activo){
+  await sbRequest('staff_jefe_taller?usuario=eq.' + encodeURIComponent(usuario), {
     method:'PATCH',
     headers:{'Prefer':'return=representation'},
     body: JSON.stringify({ activo }),
@@ -3206,33 +3431,42 @@ function renderMisSolicitudesSocio(origenTipo, origen){
 }
 async function bindMisSolicitudesSocio(origenTipo, origen){
   bindSocioBack();
-  const solicitudes = await getSolicitudesForOrigen(origen.id);
+  state.solComentariosAbiertosSocio = state.solComentariosAbiertosSocio || new Set();
+  const abiertos = state.solComentariosAbiertosSocio;
   const listEl = document.getElementById('mis-solicitudes-socio-list');
-  if(!solicitudes.length){
-    listEl.innerHTML = `<div class="empty">Aún no has enviado ninguna solicitud.</div>`;
-    return;
-  }
-  const tipoLabel = { activacion: 'Activación', falla_garantia: 'Falla / Garantía' };
-  listEl.innerHTML = solicitudes.map(s => {
-    const info = solicitudStatusInfo(s.status);
-    return `
-    <div class="card" style="margin-bottom:12px;">
-      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
-        <div>
-          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-            <span class="id-pill">${s.id}</span>
-            <b style="font-size:13px;">${tipoLabel[s.tipo]}</b>
+
+  const draw = async ()=>{
+    const solicitudes = await getSolicitudesForOrigen(origen.id);
+    if(!solicitudes.length){
+      listEl.innerHTML = `<div class="empty">Aún no has enviado ninguna solicitud.</div>`;
+      return;
+    }
+    const tipoLabel = { activacion: 'Activación', falla_garantia: 'Falla / Garantía' };
+    listEl.innerHTML = solicitudes.map(s => {
+      const esActivacion = s.tipo === 'activacion';
+      const info = solicitudStatusInfo(s.status);
+      return `
+      <div class="card" style="margin-bottom:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+          <div>
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <span class="id-pill">${s.id}</span>
+              <b style="font-size:13px;">${tipoLabel[s.tipo]}</b>
+            </div>
+            <div style="font-size:12px; color:var(--text-muted); margin-top:6px;">${esc(s.moto_modelo)} · ${esc(s.moto_serie||'')}</div>
+            ${s.taller_asignado_nombre ? `<div style="font-size:12px; color:var(--text-faint); margin-top:4px;">Taller asignado: ${esc(s.taller_asignado_nombre)}</div>` : ''}
           </div>
-          <div style="font-size:12px; color:var(--text-muted); margin-top:6px;">${esc(s.moto_modelo)} · ${esc(s.moto_serie||'')}</div>
-          ${s.taller_asignado_nombre ? `<div style="font-size:12px; color:var(--text-faint); margin-top:4px;">Taller asignado: ${esc(s.taller_asignado_nombre)}</div>` : ''}
+          <div style="text-align:right;">
+            ${esActivacion ? semaforoActivacion(s) : `<span class="badge ${info.badge}">${info.label}</span>`}
+            ${!esActivacion && s.status==='asignada' ? `<div style="margin-top:6px;">${countdownBadge(s.fecha_limite)}</div>` : ''}
+          </div>
         </div>
-        <div style="text-align:right;">
-          <span class="badge ${info.badge}">${info.label}</span>
-          ${s.status==='asignada' ? `<div style="margin-top:6px;">${countdownBadge(s.fecha_limite)}</div>` : ''}
-        </div>
-      </div>
-    </div>`;
-  }).join('');
+        ${renderComentariosBlock(s, abiertos)}
+      </div>`;
+    }).join('');
+    bindComentariosBlocks(listEl, 'socio', origen.nombre, abiertos, draw);
+  };
+  await draw();
 }
 
 /* =========================================================
@@ -5850,7 +6084,115 @@ async function bindRefaccionesStaffPanel(){
   });
 }
 
+/* ---- Panel del Jefe de taller (acceso propio, separado del panel
+   administrativo general): solo activaciones — asignar técnico, marcar
+   como activada y responder comentarios del distribuidor/retail. ---- */
+function renderJefeTallerStaffPanel(){
+  const staff = state.jefeTallerAuthed;
+  return `
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; margin-bottom:8px;">
+    <div>
+      <div class="eyebrow">Jefe de taller · Panel de activaciones</div>
+      <h1 class="page-title">Activaciones</h1>
+      <p class="page-sub">Sesión de ${esc(staff.nombre || staff.usuario)}. Asigna al técnico, marca las activaciones como terminadas y da seguimiento a los comentarios del distribuidor o tienda retail.</p>
+    </div>
+    <button class="btn btn-ghost btn-sm" id="jefe-taller-logout">Cerrar sesión</button>
+  </div>
+  <div class="grid3" id="jefe-taller-stats" style="margin-bottom:20px;"></div>
+  <div class="alert-tabs" id="jefe-taller-status-tabs" style="margin-bottom:16px;">
+    <button class="alert-tab active" data-tab="all">Todas</button>
+    ${SOLICITUD_STATUSES.map(s => `<button class="alert-tab" data-tab="${s.key}">${s.label}</button>`).join('')}
+  </div>
+  <div id="jefe-taller-solicitudes-list"></div>
+  `;
+}
+
+async function bindJefeTallerStaffPanel(){
+  document.getElementById('jefe-taller-logout').addEventListener('click', ()=>{
+    state.jefeTallerAuthed = null;
+    state.adminLoginMode = null;
+    render();
+  });
+  state.jefeTallerStatusTab = state.jefeTallerStatusTab || 'all';
+  await loadJefeTallerSolicitudes();
+  document.querySelectorAll('#jefe-taller-status-tabs .alert-tab').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      state.jefeTallerStatusTab = btn.dataset.tab;
+      document.querySelectorAll('#jefe-taller-status-tabs .alert-tab').forEach(b => b.classList.toggle('active', b===btn));
+      renderJefeTallerSolicitudesList(window.__allSolicitudesJefeTaller || []);
+    });
+  });
+}
+
+async function loadJefeTallerSolicitudes(){
+  const all = await getAllSolicitudes();
+  const container = document.getElementById('jefe-taller-solicitudes-list');
+  if(all === null){
+    container.innerHTML = `<div class="empty" style="color:var(--danger); padding:24px;">No se pudo conectar a la base de datos.</div>`;
+    window.__allSolicitudesJefeTaller = [];
+    return;
+  }
+  const solicitudes = all.filter(s => s.tipo === 'activacion');
+  window.__allSolicitudesJefeTaller = solicitudes;
+  const counts = { recibida:0, asignada:0, activada:0, finalizada:0 };
+  solicitudes.forEach(s => { if(counts[s.status] !== undefined) counts[s.status]++; });
+  const statsEl = document.getElementById('jefe-taller-stats');
+  if(statsEl){
+    statsEl.innerHTML = `
+      <div class="card"><div class="eyebrow">Total activaciones</div><div class="display" style="font-size:28px;">${solicitudes.length}</div></div>
+      <div class="card"><div class="eyebrow">Por atender</div><div class="display" style="font-size:28px; color:var(--yellow);">${counts.recibida}</div></div>
+      <div class="card"><div class="eyebrow">Asignadas / Activadas</div><div class="display" style="font-size:28px; color:var(--success);">${counts.asignada + counts.activada}</div></div>
+    `;
+  }
+  renderJefeTallerSolicitudesList(solicitudes);
+}
+
+function renderJefeTallerSolicitudesList(solicitudes){
+  const statusTab = state.jefeTallerStatusTab || 'all';
+  const filtered = solicitudes.filter(s => statusTab === 'all' || s.status === statusTab);
+  const container = document.getElementById('jefe-taller-solicitudes-list');
+  if(!container) return;
+  if(!filtered.length){
+    container.innerHTML = `<div class="empty" style="padding:24px;">Sin activaciones en esta categoría.</div>`;
+    return;
+  }
+  const origenLabel = { distribuidor: 'Distribuidor', retail: 'Retail' };
+  state.solComentariosAbiertosJefeTaller = state.solComentariosAbiertosJefeTaller || new Set();
+  const abiertos = state.solComentariosAbiertosJefeTaller;
+  const staff = state.jefeTallerAuthed || {};
+
+  container.innerHTML = filtered.map(s => {
+    const evidenciaHtml = (s.evidencia || []).map(e => `
+      <a href="${e.url}" target="_blank" style="font-size:11px; color:var(--yellow); margin-right:10px;">${e.tipo==='video'?'🎥':'📷'} ${esc(e.nombre)}</a>
+    `).join('');
+    return `
+    <div class="card" style="margin-bottom:12px;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+        <div>
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <span class="id-pill">${s.id}</span>
+            <b style="font-size:13.5px;">Activación</b>
+            <span style="color:var(--text-faint); font-size:12px;">· ${origenLabel[s.origen_tipo]}: ${esc(s.origen_nombre)}</span>
+          </div>
+          <div style="font-size:12px; color:var(--text-muted); margin-top:6px;">${esc(s.moto_modelo)} · VIN: ${esc(s.moto_serie||'—')} · ${fmtDate((s.created_at||'').slice(0,10))}</div>
+          <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Entrega a tienda: ${s.fecha_entrega_tienda||'—'} · Entrega a cliente: ${s.fecha_entrega||'—'} · Vendedor: ${esc(s.vendedor||'—')}</div>
+          ${evidenciaHtml ? `<div style="margin-top:8px;">${evidenciaHtml}</div>` : ''}
+        </div>
+        ${semaforoActivacion(s)}
+      </div>
+      ${renderActivacionStatusControl(s)}
+      ${renderComentariosBlock(s, abiertos)}
+    </div>`;
+  }).join('');
+
+  bindActivacionStatusControls(container, loadJefeTallerSolicitudes);
+  bindComentariosBlocks(container, 'staff', (staff.nombre || staff.usuario || 'Jefe de taller'), abiertos, loadJefeTallerSolicitudes);
+}
+
 function renderAdmin(){
+  if(state.jefeTallerAuthed){
+    return renderJefeTallerStaffPanel();
+  }
   if(state.refaccionesStaffAuthed){
     return renderRefaccionesStaffPanel();
   }
@@ -5868,6 +6210,19 @@ function renderAdmin(){
         <button type="button" class="btn btn-ghost btn-block" id="ref-staff-back" style="margin-top:12px;">← Acceso general de staff</button>
       </div>`;
     }
+    if(state.adminLoginMode === 'jefe_taller'){
+      return `
+      <div class="eyebrow">Acceso restringido</div>
+      <h1 class="page-title">Jefe de taller · Acceso de staff</h1>
+      <p class="page-sub">Uso exclusivo del Jefe de taller: asignación de técnico, activación y comentarios de las activaciones.</p>
+      <div class="card" style="max-width:400px;">
+        <div class="field"><label>Usuario</label><input id="jefe-taller-user" class="mono" placeholder="usuario" autocomplete="off"></div>
+        <div class="field"><label>Contraseña</label><input id="jefe-taller-pass" type="password" placeholder="••••••"></div>
+        <button class="btn btn-primary btn-block" id="jefe-taller-login">Entrar</button>
+        <p id="jefe-taller-error" style="color:var(--danger); font-size:12.5px; margin-top:10px; display:none;"></p>
+        <button type="button" class="btn btn-ghost btn-block" id="jefe-taller-back" style="margin-top:12px;">← Acceso general de staff</button>
+      </div>`;
+    }
     return `
     <div class="eyebrow">Acceso restringido</div>
     <h1 class="page-title">Panel administrativo</h1>
@@ -5877,6 +6232,7 @@ function renderAdmin(){
       <button class="btn btn-primary btn-block" id="admin-login">Entrar al panel</button>
       <p style="color:var(--text-faint); font-size:11.5px; margin-top:12px;">Acceso exclusivo para el equipo de servicio Letbe.</p>
       <button type="button" class="btn btn-ghost btn-block" id="ref-staff-switch" style="margin-top:14px;">🔧 Acceso del equipo de Refacciones</button>
+      <button type="button" class="btn btn-ghost btn-block" id="jefe-taller-switch" style="margin-top:10px;">👷 Acceso del Jefe de taller</button>
     </div>`;
   }
   return `
@@ -6509,6 +6865,111 @@ function showStaffRefaccionCredentialsModal(staff){
     </div>`;
   document.body.appendChild(overlay);
   overlay.querySelector('#close-staff-refaccion-cred').addEventListener('click', ()=> overlay.remove());
+}
+
+/* ---- Cuentas del Jefe de taller (mismo patrón que Refacciones) ---- */
+async function loadStaffJefeTallerAdmin(){
+  const tbody = document.getElementById('staff-jefe-taller-tbody');
+  if(!tbody) return;
+  const items = await getAllStaffJefeTaller();
+  if(items === null){
+    tbody.innerHTML = `<tr><td colspan="5"><div class="empty">No se pudo conectar a la base de datos.</div></td></tr>`;
+    return;
+  }
+  window.__allStaffJefeTaller = items;
+  tbody.innerHTML = items.length ? items.map(s => `
+    <tr>
+      <td class="mono">${esc(s.usuario)}</td>
+      <td>${esc(s.nombre || '—')}</td>
+      <td class="mono">${esc(s.password)}</td>
+      <td><span class="badge ${s.activo ? 'badge-success' : 'badge-danger'}">${s.activo ? 'Activo' : 'Dado de baja'}</span></td>
+      <td><button class="btn btn-ghost btn-sm" data-toggle-staff-jefe-taller="${esc(s.usuario)}" data-activo="${s.activo}">${s.activo ? 'Dar de baja' : 'Reactivar'}</button></td>
+    </tr>
+  `).join('') : `<tr><td colspan="5"><div class="empty">Aún no hay usuarios de Jefe de taller registrados.</div></td></tr>`;
+
+  tbody.querySelectorAll('[data-toggle-staff-jefe-taller]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const usuario = btn.dataset.toggleStaffJefeTaller;
+      const nuevoActivo = !(btn.dataset.activo === 'true');
+      btn.disabled = true;
+      try{
+        await updateStaffJefeTallerActivo(usuario, nuevoActivo);
+        toast(nuevoActivo ? 'Usuario reactivado.' : 'Usuario dado de baja.', 'ok');
+        await loadStaffJefeTallerAdmin();
+      }catch(err){
+        console.error(err);
+        toast('No se pudo actualizar el usuario.', 'err');
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
+function openAddStaffJefeTallerModal(){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="eyebrow">Jefe de taller</div>
+      <h2 style="font-family:'Archivo Black'; font-size:20px; margin:0 0 16px;">Nuevo usuario de Jefe de taller</h2>
+      <form id="staff-jefe-taller-form">
+        <div class="field"><label>Nombre del colaborador</label><input required name="nombre" placeholder="Ej. Juan Ramírez"></div>
+        <div class="field"><label>Usuario</label><input required name="usuario" class="mono" placeholder="Ej. juan.ramirez" autocomplete="off"></div>
+        <p style="color:var(--text-faint); font-size:11.5px; margin:-6px 0 6px;">La contraseña se genera automáticamente y se muestra al guardar.</p>
+        <div style="display:flex; gap:10px; margin-top:6px;">
+          <button type="button" class="btn btn-ghost" id="cancel-staff-jefe-taller" style="flex:1;">Cancelar</button>
+          <button type="submit" class="btn btn-primary" style="flex:1;">Guardar usuario</button>
+        </div>
+        <p id="staff-jefe-taller-form-error" style="color:var(--danger); font-size:12.5px; margin-top:10px; display:none;"></p>
+      </form>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#cancel-staff-jefe-taller').addEventListener('click', ()=> overlay.remove());
+  overlay.querySelector('#staff-jefe-taller-form').addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const f = e.target;
+    const btn = f.querySelector('button[type=submit]');
+    const errEl = document.getElementById('staff-jefe-taller-form-error');
+    errEl.style.display = 'none';
+    const usuario = f.usuario.value.trim().toLowerCase();
+    if(!usuario){ return; }
+    btn.disabled = true; btn.textContent = 'Guardando...';
+    try{
+      const staff = {
+        usuario,
+        nombre: f.nombre.value.trim(),
+        password: genTallerPassword(),
+        activo: true,
+      };
+      await createStaffJefeTaller(staff);
+      overlay.remove();
+      await loadStaffJefeTallerAdmin();
+      showStaffJefeTallerCredentialsModal(staff);
+    }catch(err){
+      console.error(err);
+      errEl.textContent = 'No se pudo guardar el usuario. Puede que ya exista ese usuario.';
+      errEl.style.display = 'block';
+      btn.disabled = false; btn.textContent = 'Guardar usuario';
+    }
+  });
+}
+
+function showStaffJefeTallerCredentialsModal(staff){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="eyebrow">Usuario registrado</div>
+      <h2 style="font-family:'Archivo Black'; font-size:20px; margin:0 0 10px;">Comparte estos accesos</h2>
+      <p style="color:var(--text-muted); font-size:13px; margin:0 0 16px;">${esc(staff.nombre || staff.usuario)} ya puede entrar al panel de “Jefe de taller” (dentro de Panel admin) con estos datos:</p>
+      <div style="background:var(--surface-2); border:1px dashed var(--yellow); border-radius:10px; padding:16px; margin-bottom:20px;">
+        <div style="margin-bottom:8px;"><span style="color:var(--text-muted); font-size:12px;">Usuario</span><br><span class="id-pill" style="font-size:16px;">${esc(staff.usuario)}</span></div>
+        <div><span style="color:var(--text-muted); font-size:12px;">Contraseña</span><br><span class="id-pill" style="font-size:16px;">${esc(staff.password)}</span></div>
+      </div>
+      <button class="btn btn-primary btn-block" id="close-staff-jefe-taller-cred">Entendido</button>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#close-staff-jefe-taller-cred').addEventListener('click', ()=> overlay.remove());
 }
 
 async function exportPedidosExcel(){
@@ -7958,9 +8419,28 @@ async function handleRetailMultiCadenaBulkUpload(file){
 }
 
 /* ---- Admin: Solicitudes (activación / falla-garantía de socios) ---- */
-function renderSolicitudesSection(){
+function renderSolicitudesSection(opts){
+  opts = opts || {};
+  const accessManagementBlock = opts.showAccessManagement ? `
+    <div style="margin-bottom:28px; padding-bottom:24px; border-bottom:1px solid var(--border);">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+        <div>
+          <h3 style="font-family:'Archivo Black'; font-size:15px; margin:0 0 4px;">Accesos del Jefe de taller</h3>
+          <p style="color:var(--text-muted); font-size:12.5px; margin:0;">Usuario y contraseña propios para que el Jefe de taller entre a su panel exclusivo de activaciones, sin usar el código general de staff.</p>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="staff-jefe-taller-add-btn">+ Nuevo usuario</button>
+      </div>
+      <div class="card" style="padding:0; overflow:hidden;">
+        <div style="overflow-x:auto;">
+          <table><thead><tr><th>Usuario</th><th>Nombre</th><th>Contraseña</th><th>Estatus</th><th></th></tr></thead>
+          <tbody id="staff-jefe-taller-tbody"></tbody></table>
+        </div>
+      </div>
+    </div>
+  ` : '';
   return `
   <div class="alert-section">
+    ${accessManagementBlock}
     <p style="color:var(--text-muted); font-size:12.5px; margin:0 0 14px;">Activaciones y reportes de falla/garantía enviados por distribuidores y tiendas retail.</p>
     <div class="grid3" id="solicitudes-stats" style="margin-bottom:20px;"></div>
     <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:16px;">
@@ -7994,12 +8474,12 @@ async function loadSolicitudesAdmin(){
     return;
   }
   window.__allSolicitudes = solicitudes;
-  const counts = { recibida:0, asignada:0, finalizada:0 };
+  const counts = { recibida:0, asignada:0, activada:0, finalizada:0 };
   solicitudes.forEach(s => { if(counts[s.status] !== undefined) counts[s.status]++; });
   document.getElementById('solicitudes-stats').innerHTML = `
     <div class="card"><div class="eyebrow">Total</div><div class="display" style="font-size:28px;">${solicitudes.length}</div></div>
-    <div class="card"><div class="eyebrow">Por asignar</div><div class="display" style="font-size:28px; color:var(--yellow);">${counts.recibida}</div></div>
-    <div class="card"><div class="eyebrow">Asignadas / Finalizadas</div><div class="display" style="font-size:28px; color:var(--success);">${counts.asignada + counts.finalizada}</div></div>
+    <div class="card"><div class="eyebrow">Por atender</div><div class="display" style="font-size:28px; color:var(--yellow);">${counts.recibida}</div></div>
+    <div class="card"><div class="eyebrow">Asignadas / Activadas / Finalizadas</div><div class="display" style="font-size:28px; color:var(--success);">${counts.asignada + counts.activada + counts.finalizada}</div></div>
   `;
   renderSolicitudesAdminList(solicitudes);
 }
@@ -8021,8 +8501,11 @@ async function renderSolicitudesAdminList(solicitudes){
   const activos = talleres.filter(t => t.activo);
   const tipoLabel = { activacion: 'Activación', falla_garantia: 'Falla / Garantía' };
   const origenLabel = { distribuidor: 'Distribuidor', retail: 'Retail' };
+  state.solComentariosAbiertosAdmin = state.solComentariosAbiertosAdmin || new Set();
+  const abiertos = state.solComentariosAbiertosAdmin;
 
   container.innerHTML = filtered.map(s => {
+    const esActivacion = s.tipo === 'activacion';
     const info = solicitudStatusInfo(s.status);
     const evidenciaHtml = (s.evidencia || []).map(e => `
       <a href="${e.url}" target="_blank" style="font-size:11px; color:var(--yellow); margin-right:10px;">${e.tipo==='video'?'🎥':'📷'} ${esc(e.nombre)}</a>
@@ -8032,7 +8515,8 @@ async function renderSolicitudesAdminList(solicitudes){
         <div class="eyebrow" style="color:var(--yellow); font-size:10px; margin-bottom:6px;">Refacciones solicitadas</div>
         ${s.refacciones.map(r => `<div style="font-size:12px; color:var(--text-muted);">${esc(r.numero_parte||'—')} · ${esc(r.nombre||'—')} · Cant. ${r.cantidad}</div>`).join('')}
       </div>` : '';
-    const asignarHtml = s.status === 'recibida' ? `
+    // Falla/garantía sigue el flujo de asignar a un taller físico (sin cambios).
+    const asignarHtml = (!esActivacion && s.status === 'recibida') ? `
       <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border); display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
         <select class="sol-taller-select" data-sol="${s.id}" style="max-width:260px;">
           <option value="">Selecciona un taller...</option>
@@ -8044,6 +8528,10 @@ async function renderSolicitudesAdminList(solicitudes){
       <div style="margin-top:10px; font-size:12px; color:var(--text-muted);">
         Taller asignado: <b style="color:var(--text);">${esc(s.taller_asignado_nombre)}</b> ${s.status==='asignada' ? countdownBadge(s.fecha_limite) : ''}
       </div>` : '';
+    // Activación: flujo Recibida -> asignar técnico -> Asignada -> capturar
+    // día/hora de término -> Activada (control compartido con el panel de
+    // Jefe de taller).
+    const activarHtml = esActivacion ? renderActivacionStatusControl(s) : '';
 
     return `
     <div class="card" style="margin-bottom:12px;">
@@ -8055,15 +8543,17 @@ async function renderSolicitudesAdminList(solicitudes){
             <span style="color:var(--text-faint); font-size:12px;">· ${origenLabel[s.origen_tipo]}: ${esc(s.origen_nombre)}</span>
           </div>
           <div style="font-size:12px; color:var(--text-muted); margin-top:6px;">${esc(s.moto_modelo)} · VIN: ${esc(s.moto_serie||'—')} · ${fmtDate((s.created_at||'').slice(0,10))}</div>
-          ${s.tipo==='activacion' ? `<div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Entrega a tienda: ${s.fecha_entrega_tienda||'—'} · Entrega a cliente: ${s.fecha_entrega||'—'} · Vendedor: ${esc(s.vendedor||'—')}</div>` : ''}
+          ${esActivacion ? `<div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Entrega a tienda: ${s.fecha_entrega_tienda||'—'} · Entrega a cliente: ${s.fecha_entrega||'—'} · Vendedor: ${esc(s.vendedor||'—')}</div>` : ''}
           ${s.tipo==='falla_garantia' ? `<div style="color:var(--text-muted); font-size:12.5px; margin-top:6px; max-width:480px;">${esc(s.descripcion||'')}</div>` : ''}
           ${evidenciaHtml ? `<div style="margin-top:8px;">${evidenciaHtml}</div>` : ''}
           ${refaccionesHtml}
           ${asignadaInfo}
         </div>
-        <span class="badge ${info.badge}">${info.label}</span>
+        ${esActivacion ? semaforoActivacion(s) : `<span class="badge ${info.badge}">${info.label}</span>`}
       </div>
       ${asignarHtml}
+      ${activarHtml}
+      ${renderComentariosBlock(s, abiertos)}
     </div>`;
   }).join('');
 
@@ -8086,6 +8576,10 @@ async function renderSolicitudesAdminList(solicitudes){
       }
     });
   });
+
+  bindActivacionStatusControls(container, loadSolicitudesAdmin);
+
+  bindComentariosBlocks(container, 'staff', 'Postventa', abiertos, loadSolicitudesAdmin);
 }
 
 async function loadTalleresAdmin(){
@@ -8635,6 +9129,36 @@ async function bindAdmin(){
       });
       return;
     }
+    if(state.adminLoginMode === 'jefe_taller'){
+      const go = async ()=>{
+        const usuario = document.getElementById('jefe-taller-user').value.trim().toLowerCase();
+        const pass = document.getElementById('jefe-taller-pass').value;
+        const errEl = document.getElementById('jefe-taller-error');
+        errEl.style.display = 'none';
+        if(!usuario || !pass) return;
+        const result = await getStaffJefeTaller(usuario, pass);
+        if(result.error){
+          const msgs = {
+            notfound: 'No encontramos ese usuario.',
+            inactive: 'Este usuario fue dado de baja. Contacta a tu administrador.',
+            badpassword: 'Contraseña incorrecta.',
+            connection: result.detail || 'No se pudo conectar. Revisa tu conexión a internet.',
+          };
+          errEl.textContent = msgs[result.error] || 'Error desconocido.';
+          errEl.style.display = 'block';
+          return;
+        }
+        state.jefeTallerAuthed = result.staff;
+        render();
+      };
+      document.getElementById('jefe-taller-login').addEventListener('click', go);
+      document.getElementById('jefe-taller-pass').addEventListener('keydown', e=>{ if(e.key==='Enter') go(); });
+      document.getElementById('jefe-taller-back').addEventListener('click', ()=>{
+        state.adminLoginMode = 'general';
+        render();
+      });
+      return;
+    }
     document.getElementById('admin-login').addEventListener('click', ()=>{
       const val = document.getElementById('admin-pass').value;
       if(val === 'BEJ9-AX7U-7FY8'){
@@ -8646,6 +9170,10 @@ async function bindAdmin(){
     });
     document.getElementById('ref-staff-switch').addEventListener('click', ()=>{
       state.adminLoginMode = 'refacciones';
+      render();
+    });
+    document.getElementById('jefe-taller-switch').addEventListener('click', ()=>{
+      state.adminLoginMode = 'jefe_taller';
       render();
     });
     return;
@@ -8775,10 +9303,12 @@ async function renderAdminSectionContent(){
       document.getElementById('retail-export-all-btn').addEventListener('click', exportAllTiendasRetailExcel);
     }
   }else if(state.adminSection === 'solicitudes'){
-    content.innerHTML = renderSolicitudesSection();
+    content.innerHTML = renderSolicitudesSection({ showAccessManagement: true });
     state.solTipoTab = state.solTipoTab || 'all';
     state.solStatusTab = state.solStatusTab || 'all';
     await loadSolicitudesAdmin();
+    await loadStaffJefeTallerAdmin();
+    document.getElementById('staff-jefe-taller-add-btn').addEventListener('click', openAddStaffJefeTallerModal);
     document.querySelectorAll('#sol-tipo-tabs .alert-tab').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         state.solTipoTab = btn.dataset.tab;
@@ -9108,7 +9638,10 @@ async function render(){
     main.innerHTML = renderCotizador();
     bindCotizador();
   }else if(state.view === 'admin'){
-    if(state.refaccionesStaffAuthed){
+    if(state.jefeTallerAuthed){
+      main.innerHTML = renderJefeTallerStaffPanel();
+      await bindJefeTallerStaffPanel();
+    }else if(state.refaccionesStaffAuthed){
       main.innerHTML = renderRefaccionesStaffPanel();
       await bindRefaccionesStaffPanel();
     }else{
