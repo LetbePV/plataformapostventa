@@ -644,6 +644,26 @@ const EMAILJS_TEMPLATE_ID_REFACCIONES = 'template_n798gmg';
 // nada (solo deja un aviso en consola) para no romper el flujo de la solicitud.
 const EMAILJS_TEMPLATE_ID_SOLICITUD_SOCIO = 'template_26bhf7j';
 
+// Caso especial: cuando el distribuidor "Letbe Periférico" levanta una
+// solicitud de ACTIVACIÓN, el correo debe ir a un destinatario distinto al
+// general de arriba (a taller/servicio, no a Postventa como principal).
+// Debe configurarse en el dashboard de EmailJS (duplicar la plantilla de
+// EMAILJS_TEMPLATE_ID_SOLICITUD_SOCIO, mismas variables, y cambiar:
+// To Email: jefetaller@zontesmexico.com
+// Cc: servicio@zontesmexico.com, atencionpostventa@zontesmexico.com, gerenciapostventa@ivo-dimao.com
+// Mientras no se configure el ID real aquí, este caso usa el template general
+// (EMAILJS_TEMPLATE_ID_SOLICITUD_SOCIO) como respaldo.
+const EMAILJS_TEMPLATE_ID_ACTIVACION_PERIFERICO = 'template_khtdbzo';
+// Nombre exacto del distribuidor al que aplica el caso especial de arriba
+// (tal como aparece en DISTRIBUIDOR_NOMBRES / el registro del distribuidor).
+const DISTRIBUIDOR_ACTIVACION_ESPECIAL = 'Letbe Periférico';
+// Compara nombres de distribuidor ignorando acentos, mayúsculas y espacios
+// sobrantes, para que no falle por una tilde mal colocada al capturar el dato.
+function mismoNombreDistribuidor(a, b){
+  const norm = s => String(s||'').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
+  return norm(a) === norm(b);
+}
+
 // Envío genérico vía API REST de EmailJS. Devuelve true/false según el resultado
 // y nunca lanza excepción hacia quien lo llama (no debe romper el flujo principal).
 async function sendEmailJS(templateId, templateParams){
@@ -744,11 +764,20 @@ async function notifySolicitudCompra(s){
 // motocicleta, la tienda de origen, el vendedor que solicita, su número de
 // contacto y (solo para activaciones) la fecha máxima de activación.
 async function notifySolicitudSocio(s, origen){
-  if(!EMAILJS_TEMPLATE_ID_SOLICITUD_SOCIO){
-    console.warn('EMAILJS_TEMPLATE_ID_SOLICITUD_SOCIO no configurado; no se envió el correo de la solicitud a Postventa.');
+  const esActivacion = s.tipo === 'activacion';
+  // Caso especial: activación solicitada por el distribuidor "Letbe Periférico"
+  // se enruta a un template distinto (jefetaller/servicio en vez de Postventa
+  // como principal); si aún no está configurado, cae de regreso al general.
+  const esActivacionPeriferico = esActivacion
+    && s.origen_tipo === 'distribuidor'
+    && mismoNombreDistribuidor(s.origen_nombre, DISTRIBUIDOR_ACTIVACION_ESPECIAL);
+  const templateId = (esActivacionPeriferico && EMAILJS_TEMPLATE_ID_ACTIVACION_PERIFERICO)
+    ? EMAILJS_TEMPLATE_ID_ACTIVACION_PERIFERICO
+    : EMAILJS_TEMPLATE_ID_SOLICITUD_SOCIO;
+  if(!templateId){
+    console.warn('Ningún template de EmailJS configurado; no se envió el correo de la solicitud.');
     return false;
   }
-  const esActivacion = s.tipo === 'activacion';
   const tipoLegible = esActivacion ? 'Solicitud de activación' : 'Reporte de falla / garantía';
   const origenLegible = s.origen_tipo === 'distribuidor' ? 'Distribuidor' : 'Tienda retail';
   const cadenaLinea = (s.origen_tipo === 'retail' && origen && origen.cadena_nombre) ? `\nCadena: ${origen.cadena_nombre}` : '';
@@ -770,7 +799,7 @@ async function notifySolicitudSocio(s, origen){
     bloques.push(`Descripción de la falla/daño:\n${s.descripcion}`);
   }
   const detalle = bloques.join('\n\n');
-  const ok = await sendEmailJS(EMAILJS_TEMPLATE_ID_SOLICITUD_SOCIO, {
+  const ok = await sendEmailJS(templateId, {
     tipo_evento: `${tipoLegible} — ${s.origen_nombre}`,
     nombre_cliente: s.origen_nombre || '',
     codigo_cliente: s.id || '',
