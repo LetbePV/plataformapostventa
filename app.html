@@ -2226,6 +2226,11 @@ function customerToRow(c){
     serial: c.serial,
     purchase_date: c.purchaseDate || null,
     invoice: c.invoice,
+    tienda_compra_tipo: c.tiendaCompraTipo || null,
+    tienda_compra_estado: c.tiendaCompraEstado || null,
+    tienda_compra_ciudad: c.tiendaCompraCiudad || null,
+    tienda_compra_nombre: c.tiendaCompraNombre || null,
+    tienda_compra_sucursal: c.tiendaCompraSucursal || null,
     services: c.services || emptyServices(),
   };
 }
@@ -2251,6 +2256,11 @@ function rowToCustomer(r){
     serial: r.serial,
     purchaseDate: r.purchase_date,
     invoice: r.invoice,
+    tiendaCompraTipo: r.tienda_compra_tipo,
+    tiendaCompraEstado: r.tienda_compra_estado,
+    tiendaCompraCiudad: r.tienda_compra_ciudad,
+    tiendaCompraNombre: r.tienda_compra_nombre,
+    tiendaCompraSucursal: r.tienda_compra_sucursal,
     createdAt: r.created_at,
     services: normalizeServices(r.services),
   };
@@ -2433,6 +2443,21 @@ function renderRegistro(){
         <div class="field"><label>Fecha de compra</label><input required name="purchaseDate" type="date"></div>
         <div class="field"><label>Número de factura</label><input required name="invoice" class="mono" placeholder="F-000123"></div>
       </div>
+      <div class="divider"></div>
+      <div class="field">
+        <label>Tienda donde compró su moto</label>
+        <select required name="tiendaCompraTipo" id="reg-tienda-tipo">
+          <option value="">Selecciona una opción</option>
+          <option value="retail">Tienda departamental</option>
+          <option value="distribuidor">Distribuidor Letbe</option>
+        </select>
+      </div>
+      <div class="grid4">
+        <div class="field"><label>Estado</label><input required name="tiendaCompraEstado" placeholder="Ej. Estado de México"></div>
+        <div class="field"><label>Ciudad</label><input required name="tiendaCompraCiudad" placeholder="Ej. Toluca"></div>
+        <div class="field"><label>Tienda</label><input required name="tiendaCompraNombre" placeholder="Ej. Liverpool, Letbe Insurgentes..."></div>
+        <div class="field"><label>Sucursal</label><input required name="tiendaCompraSucursal" placeholder="Ej. Plaza Norte"></div>
+      </div>
       <button class="btn btn-primary btn-block" type="submit">Registrar motocicleta</button>
     </form>
   </div>
@@ -2453,6 +2478,7 @@ function bindRegistro(){
       estado: f.estado.value.trim(),
       cp: f.cp.value.trim(),
     };
+    const tiendaCompraTipoLabel = { retail: 'Tienda departamental', distribuidor: 'Distribuidor Letbe' };
     const customer = {
       id,
       name: f.name.value.trim(),
@@ -2466,6 +2492,11 @@ function bindRegistro(){
       serial: f.serial.value.trim().toUpperCase(),
       purchaseDate: f.purchaseDate.value,
       invoice: f.invoice.value.trim(),
+      tiendaCompraTipo: f.tiendaCompraTipo.value,
+      tiendaCompraEstado: f.tiendaCompraEstado.value.trim(),
+      tiendaCompraCiudad: f.tiendaCompraCiudad.value.trim(),
+      tiendaCompraNombre: f.tiendaCompraNombre.value.trim(),
+      tiendaCompraSucursal: f.tiendaCompraSucursal.value.trim(),
       createdAt: new Date().toISOString(),
     };
     const btn = f.querySelector('button');
@@ -2480,7 +2511,7 @@ function bindRegistro(){
         codigo_cliente: customer.id,
         modelo_moto: `${customer.model} (${customer.year})`,
         telefono_cliente: customer.phone,
-        detalle: `Serie: ${customer.serial}\nCompra: ${customer.purchaseDate} · Factura ${customer.invoice}\nDirección: ${customer.addressText}`,
+        detalle: `Serie: ${customer.serial}\nCompra: ${customer.purchaseDate} · Factura ${customer.invoice}\nDirección: ${customer.addressText}\nTienda de compra: ${tiendaCompraTipoLabel[customer.tiendaCompraTipo]||'—'} · ${customer.tiendaCompraNombre||'—'} · Sucursal ${customer.tiendaCompraSucursal||'—'} · ${customer.tiendaCompraCiudad||'—'}, ${customer.tiendaCompraEstado||'—'}`,
       });
     }catch(err){
       console.error(err);
@@ -2691,6 +2722,7 @@ async function renderCustomerDetail(id, customer, adminMode){
         Compra: ${fmtDate(customer.purchaseDate)} · Factura ${esc(customer.invoice)}<br>
         ${esc(customer.phone)} · ${esc(customer.email)}<br>
         ${esc(formatAddress(customer))}
+        ${customer.tiendaCompraNombre ? `<br>Tienda de compra: ${esc(customer.tiendaCompraTipo === 'retail' ? 'Tienda departamental' : 'Distribuidor Letbe')} · ${esc(customer.tiendaCompraNombre)}${customer.tiendaCompraSucursal ? ' · Sucursal ' + esc(customer.tiendaCompraSucursal) : ''}${customer.tiendaCompraCiudad ? ' · ' + esc(customer.tiendaCompraCiudad) : ''}${customer.tiendaCompraEstado ? ', ' + esc(customer.tiendaCompraEstado) : ''}` : ''}
       </p>
       <div class="id-pill">${id}</div>
       <div class="tier-strip">${tierChips}</div>
@@ -8964,6 +8996,11 @@ async function exportExcelReport(){
         'Número de serie (VIN)': c.serial,
         'Fecha de compra': c.purchaseDate || '',
         'Factura de compra': c.invoice,
+        'Tienda de compra (tipo)': c.tiendaCompraTipo === 'retail' ? 'Tienda departamental' : (c.tiendaCompraTipo === 'distribuidor' ? 'Distribuidor Letbe' : ''),
+        'Tienda de compra - Estado': c.tiendaCompraEstado || '',
+        'Tienda de compra - Ciudad': c.tiendaCompraCiudad || '',
+        'Tienda de compra - Nombre': c.tiendaCompraNombre || '',
+        'Tienda de compra - Sucursal': c.tiendaCompraSucursal || '',
         'Servicios cumplidos': `${done} / ${SCHEDULE.length}`,
         'Nivel de lealtad': tier ? tier.label : '—',
         'Fecha de registro': c.createdAt ? c.createdAt.slice(0,10) : '',
