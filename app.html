@@ -674,10 +674,19 @@ const DISTRIBUIDOR_ACTIVACION_ESPECIAL = 'Letbe Periférico';
 // Mientras no se configure el ID real aquí, notifyPagoGarantiaSolicitado()
 // no envía nada (solo deja un aviso en consola) para no romper el flujo de
 // envío de factura/comprobante del taller.
+//
+// Esta MISMA plantilla también se usa para el aviso individual de "llegó un
+// cobro de activación" (notifyCobroActivacionSolicitado() más abajo) — no
+// hay una plantilla separada para eso. Ambos avisos usan exactamente las
+// mismas variables y los mismos destinatarios; lo único que cambia entre uno
+// y otro es el texto de {{tipo_evento}} y {{detalle}} que manda el código en
+// cada caso, así que reutilizar la plantilla no le quita información a
+// ninguno de los dos correos — solo ahorra una plantilla en tu cuenta de
+// EmailJS (útil si tu plan tiene límite de plantillas).
 const EMAILJS_TEMPLATE_ID_PAGO_GARANTIA = 'template_ikeplos';
 
-// Plantilla para el reporte semanal de estatus de pagos (ver
-// enviarReportePagosGarantias() más abajo) — mismos destinatarios que
+// Plantilla para el reporte de estatus de pagos (ver
+// enviarReportePagosGarantiasAhora() más abajo) — mismos destinatarios que
 // EMAILJS_TEMPLATE_ID_PAGO_GARANTIA (To: atencionpostventa@zontesmexico.com;
 // Cc: gerenciapostventa@ivo-dimao.com, contabilidadivo@ivo-dimao.com,
 // finanzas@ivo-dimao.com), pero con el cuerpo del correo en HTML: debe
@@ -686,6 +695,14 @@ const EMAILJS_TEMPLATE_ID_PAGO_GARANTIA = 'template_ikeplos';
 // se quiera mostrar la tabla con las facturas no pagadas resaltadas en rojo.
 // Ver PLANTILLA_REPORTE_PAGOS_HTML más abajo para el HTML de referencia que
 // puedes pegar directamente en el editor de la plantilla en EmailJS.
+//
+// Este único reporte junta AMBOS tipos de factura — garantías y cobro de
+// activaciones — en una sola tabla (con columna "Tipo"), así que solo hace
+// falta esta plantilla; no existe una plantilla de reporte separada para
+// activaciones. El botón "✉️ Enviar reporte ahora" tanto en Pagos de
+// garantías como en Pagos de activaciones (Panel admin y panel de
+// Contabilidad) manda este mismo correo combinado, y así también lo hace el
+// envío semanal automático (ver supabase/functions/reporte-pagos-garantias).
 const EMAILJS_TEMPLATE_ID_REPORTE_PAGOS = 'template_yjhj2nl';
 
 // Compara nombres de distribuidor ignorando acentos, mayúsculas y espacios
@@ -784,6 +801,31 @@ async function notifyPagoGarantiaSolicitado(g){
     fecha_evento: new Date().toLocaleString('es-MX'),
   });
   if(ok) logEmailSent('Solicitud de pago de garantía');
+  return ok;
+}
+
+// Aviso a Postventa cuando un taller sube su factura + fotos para cobro de
+// una activación. Igual que en garantías, este correo es la señal de "hay un
+// pago por procesar" — el apartado de Cobro de activaciones es el único
+// canal por el que un taller puede solicitar este pago.
+async function notifyCobroActivacionSolicitado(a){
+  // Reutiliza la misma plantilla que el aviso de pago de garantía (ver el
+  // comentario junto a EMAILJS_TEMPLATE_ID_PAGO_GARANTIA más arriba) — no
+  // existe una plantilla separada para este aviso.
+  if(!EMAILJS_TEMPLATE_ID_PAGO_GARANTIA){
+    console.warn('EMAILJS_TEMPLATE_ID_PAGO_GARANTIA no configurado; no se envió el correo de cobro de activación.');
+    return false;
+  }
+  const ok = await sendEmailJS(EMAILJS_TEMPLATE_ID_PAGO_GARANTIA, {
+    tipo_evento: 'Nueva solicitud de cobro de activación',
+    nombre_cliente: a.cliente_nombre || '',
+    codigo_cliente: '',
+    modelo_moto: a.moto_modelo || '',
+    telefono_cliente: '',
+    detalle: `N° de activación: ${a.id}\nTaller: ${a.taller_nombre || ''} (${a.taller_id || ''})\nMoto: ${a.moto_modelo || ''}${a.moto_serie ? ` · Serie: ${a.moto_serie}` : ''}\n${a.descripcion ? `Descripción: ${a.descripcion}\n` : ''}${a.factura_numero ? `N° de factura: ${a.factura_numero}\n` : ''}${(a.factura_monto !== null && a.factura_monto !== undefined) ? `Monto: ${fmtMoney(a.factura_monto)}\n` : ''}\nFactura: ${a.factura_url || ''}\nFoto de proceso: ${a.foto_proceso || ''}\nFoto de activación: ${a.foto_activacion || ''}`,
+    fecha_evento: new Date().toLocaleString('es-MX'),
+  });
+  if(ok) logEmailSent('Solicitud de cobro de activación');
   return ok;
 }
 
@@ -1034,6 +1076,48 @@ async function updateGarantiaTaller(id, fields){
 async function getAllPagosGarantias(){
   try{
     const rows = await sbRequestAllPages('garantias_taller?factura_url=not.is.null&select=*&order=pago_fecha_solicitud.desc');
+    return rows;
+  }catch(e){ console.error(e); return null; }
+}
+
+/* ---- Cobro de activaciones (activaciones_taller): a diferencia de
+   garantías, aquí no hay un paso previo de autorización — el taller sube
+   directo su factura y dos fotos (proceso y activación de la moto) y el
+   registro ya nace como una solicitud de pago "pendiente". ---- */
+function genActivacionTallerId(){
+  const now = new Date();
+  const dd = String(now.getDate()).padStart(2,'0');
+  const mm = String(now.getMonth()+1).padStart(2,'0');
+  const yyyy = now.getFullYear();
+  const rand = String(Math.floor(Math.random()*100)).padStart(2,'0');
+  return `ACT${dd}${mm}${yyyy}${rand}`;
+}
+async function createActivacionTaller(a){
+  await sbRequest('activaciones_taller', {
+    method:'POST',
+    headers:{'Prefer':'return=representation'},
+    body: JSON.stringify(a),
+  });
+}
+async function getActivacionesForTaller(tallerId){
+  try{
+    const rows = await sbRequest('activaciones_taller?taller_id=eq.' + encodeURIComponent(tallerId) + '&select=*&order=created_at.desc', {method:'GET'});
+    return rows || [];
+  }catch(e){ console.error(e); return []; }
+}
+async function updateActivacionTaller(id, fields){
+  await sbRequest('activaciones_taller?id=eq.' + encodeURIComponent(id), {
+    method:'PATCH',
+    headers:{'Prefer':'return=representation'},
+    body: JSON.stringify({ ...fields, updated_at: new Date().toISOString() }),
+  });
+}
+// Todos los cobros de activación registrados — a diferencia de
+// getAllPagosGarantias(), aquí no hace falta filtrar por "ya tiene factura"
+// porque cada fila de esta tabla nace siendo una solicitud de pago.
+async function getAllCobrosActivaciones(){
+  try{
+    const rows = await sbRequestAllPages('activaciones_taller?select=*&order=pago_fecha_solicitud.desc');
     return rows;
   }catch(e){ console.error(e); return null; }
 }
@@ -1816,6 +1900,47 @@ async function createStaffJefeTaller(s){
 }
 async function updateStaffJefeTallerActivo(usuario, activo){
   await sbRequest('staff_jefe_taller?usuario=eq.' + encodeURIComponent(usuario), {
+    method:'PATCH',
+    headers:{'Prefer':'return=representation'},
+    body: JSON.stringify({ activo }),
+  });
+}
+
+/* ---- Cuentas de Contabilidad (usuario + contraseña propios, acceso a un
+   panel exclusivo para mover el estatus de pago de Garantías y de Cobro de
+   activaciones, sin usar el código general de staff). ---- */
+async function getAllStaffContabilidad(){
+  try{
+    const rows = await sbRequestAllPages('staff_contabilidad?select=*&order=created_at.desc');
+    return rows;
+  }catch(e){ console.error(e); return null; }
+}
+async function getStaffContabilidad(usuario, password){
+  try{
+    const rows = await sbRequest('staff_contabilidad?usuario=eq.' + encodeURIComponent(usuario) + '&select=*', { method:'GET' });
+    if(!rows || !rows.length) return { error: 'notfound' };
+    const s = rows[0];
+    if(!s.activo) return { error: 'inactive' };
+    if(s.password !== password) return { error: 'badpassword' };
+    return { staff: s };
+  }catch(e){
+    console.error(e);
+    const msg = (e && e.message) || '';
+    if(msg.includes("Could not find the table") || msg.includes('relation') || msg.includes('does not exist')){
+      return { error: 'connection', detail: 'La tabla "staff_contabilidad" no existe todavía en Supabase. Corre el SQL de configuración antes de continuar.' };
+    }
+    return { error: 'connection', detail: msg };
+  }
+}
+async function createStaffContabilidad(s){
+  await sbRequest('staff_contabilidad', {
+    method:'POST',
+    headers:{'Prefer':'return=representation'},
+    body: JSON.stringify(s),
+  });
+}
+async function updateStaffContabilidadActivo(usuario, activo){
+  await sbRequest('staff_contabilidad?usuario=eq.' + encodeURIComponent(usuario), {
     method:'PATCH',
     headers:{'Prefer':'return=representation'},
     body: JSON.stringify({ activo }),
@@ -3626,6 +3751,8 @@ function renderTallerDashboard(taller){
   if(sub === 'mis-ordenes') return renderMisOrdenes(taller);
   if(sub === 'nueva-garantia') return renderNuevaGarantiaTaller(taller);
   if(sub === 'mis-garantias') return renderMisGarantiasTaller(taller);
+  if(sub === 'nueva-cobro-activacion') return renderNuevaCobroActivacion(taller);
+  if(sub === 'mis-cobros-activacion') return renderMisCobrosActivacion(taller);
   if(sub === 'manuales') return renderManualesTaller(taller);
   if(sub === 'formatos') return renderFormatosTaller(taller);
   if(sub === 'precios') return renderPreciosTaller(taller);
@@ -3652,6 +3779,11 @@ function renderTallerDashboard(taller){
       <h3 style="font-family:'Archivo Black'; font-size:15px; margin:0 0 8px;">Garantías</h3>
       <p style="color:var(--text-muted); font-size:12.5px; margin:0 0 16px; min-height:36px;">Reclamos de garantía con evidencia fotográfica.</p>
       <button class="btn btn-primary btn-sm btn-block" data-taller-nav="nueva-garantia">+ Nuevo reclamo</button>
+    </div>
+    <div class="card">
+      <h3 style="font-family:'Archivo Black'; font-size:15px; margin:0 0 8px;">Cobro de activaciones</h3>
+      <p style="color:var(--text-muted); font-size:12.5px; margin:0 0 16px; min-height:36px;">Factura y fotos de proceso/activación para solicitar el pago.</p>
+      <button class="btn btn-primary btn-sm btn-block" data-taller-nav="nueva-cobro-activacion">+ Nuevo cobro</button>
     </div>
   </div>
 
@@ -3684,6 +3816,15 @@ function renderTallerDashboard(taller){
           <p style="color:var(--text-muted); font-size:12.5px; margin:0;">Reclamos generados por este taller.</p>
         </div>
         <button class="btn btn-ghost btn-sm" data-taller-nav="mis-garantias">Ver garantías</button>
+      </div>
+    </div>
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+        <div>
+          <h3 style="font-family:'Archivo Black'; font-size:15px; margin:0 0 4px;">Mis cobros de activación</h3>
+          <p style="color:var(--text-muted); font-size:12.5px; margin:0;">Estatus de pago de tus activaciones.</p>
+        </div>
+        <button class="btn btn-ghost btn-sm" data-taller-nav="mis-cobros-activacion">Ver cobros</button>
       </div>
     </div>
     <div class="card">
@@ -3726,6 +3867,8 @@ function bindTallerDashboard(){
   if(sub === 'mis-ordenes'){ bindMisOrdenes(state.tallerAuthed); return; }
   if(sub === 'nueva-garantia'){ bindNuevaGarantiaTaller(state.tallerAuthed); return; }
   if(sub === 'mis-garantias'){ bindMisGarantiasTaller(state.tallerAuthed); return; }
+  if(sub === 'nueva-cobro-activacion'){ bindNuevaCobroActivacion(state.tallerAuthed); return; }
+  if(sub === 'mis-cobros-activacion'){ bindMisCobrosActivacion(state.tallerAuthed); return; }
   if(sub === 'manuales'){ bindManualesTaller(); return; }
   if(sub === 'formatos'){ bindFormatosTaller(); return; }
   if(sub === 'precios'){ bindPreciosTaller(); return; }
@@ -5418,6 +5561,144 @@ async function bindMisGarantiasTaller(taller){
   });
 }
 
+/* ---- Cobro de activaciones: el taller sube su factura y dos fotos (proceso
+   y activación de la moto) para solicitar el pago de una activación que
+   realizó. A diferencia de Garantías, no hay un cliente/moto ya registrados
+   que buscar — el taller captura esos datos a mano — y no hay paso de
+   autorización previa: en cuanto envía el formulario, el registro ya queda
+   como una solicitud de pago "Pendiente de pago". ---- */
+function renderNuevaCobroActivacion(taller){
+  return `
+  ${tallerBackButton()}
+  <div class="eyebrow">Cobro de activaciones</div>
+  <h1 class="page-title">Nuevo cobro de activación</h1>
+  <p class="page-sub">Sube tu factura y las dos fotos (proceso y activación de la moto) para solicitar el pago. Este es el único canal para solicitar el pago de una activación.</p>
+
+  <div class="card" style="max-width:560px;">
+    <div class="field"><label>Nombre del cliente</label><input id="ca-cliente-nombre" placeholder="Ej. Juan Pérez"></div>
+    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+      <div class="field" style="flex:1; min-width:180px;"><label>Modelo de la moto</label><input id="ca-moto-modelo" placeholder="Ej. Neón 125"></div>
+      <div class="field" style="flex:1; min-width:180px;"><label>N° de serie / VIN (opcional)</label><input id="ca-moto-serie" class="mono" placeholder="VIN..."></div>
+    </div>
+    <div class="field"><label>Descripción (opcional)</label><textarea id="ca-descripcion" placeholder="Notas sobre la activación realizada..."></textarea></div>
+    <div class="field"><label>Factura (PDF o imagen)</label><input type="file" accept="application/pdf,image/*" id="ca-factura-file"></div>
+    <div class="field"><label>Foto del proceso</label><input type="file" accept="image/*" id="ca-foto-proceso-file"></div>
+    <div class="field"><label>Foto de la activación de la moto</label><input type="file" accept="image/*" id="ca-foto-activacion-file"></div>
+    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+      <div class="field" style="flex:1; min-width:160px;"><label>N° de factura (opcional)</label><input type="text" id="ca-factura-numero" placeholder="Ej. F-00123"></div>
+      <div class="field" style="flex:1; min-width:160px;"><label>Monto (opcional)</label><input type="number" step="0.01" min="0" id="ca-factura-monto" placeholder="0.00"></div>
+    </div>
+    <button class="btn btn-primary btn-block" id="ca-submit-btn">Enviar cobro</button>
+    <p id="ca-submit-error" style="color:var(--danger); font-size:12.5px; margin-top:10px; display:none;"></p>
+  </div>
+  `;
+}
+
+function bindNuevaCobroActivacion(taller){
+  bindTallerBack();
+  const btn = document.getElementById('ca-submit-btn');
+  const errEl = document.getElementById('ca-submit-error');
+  btn.addEventListener('click', async ()=>{
+    errEl.style.display = 'none';
+    const clienteNombre = document.getElementById('ca-cliente-nombre').value.trim();
+    const motoModelo = document.getElementById('ca-moto-modelo').value.trim();
+    const motoSerie = document.getElementById('ca-moto-serie').value.trim();
+    const descripcion = document.getElementById('ca-descripcion').value.trim();
+    const facturaInput = document.getElementById('ca-factura-file');
+    const procesoInput = document.getElementById('ca-foto-proceso-file');
+    const activacionInput = document.getElementById('ca-foto-activacion-file');
+    const numero = document.getElementById('ca-factura-numero').value.trim();
+    const montoVal = document.getElementById('ca-factura-monto').value;
+    const monto = montoVal !== '' ? Number(montoVal) : null;
+
+    if(!clienteNombre || !motoModelo){
+      errEl.textContent = 'Captura el nombre del cliente y el modelo de la moto.';
+      errEl.style.display = 'block';
+      return;
+    }
+    if(!facturaInput.files[0] || !procesoInput.files[0] || !activacionInput.files[0]){
+      errEl.textContent = 'Sube la factura y las dos fotos (proceso y activación) antes de continuar.';
+      errEl.style.display = 'block';
+      return;
+    }
+
+    btn.disabled = true; btn.textContent = 'Subiendo...';
+    try{
+      const id = genActivacionTallerId();
+      const [facturaUrl, fotoProceso, fotoActivacion] = await Promise.all([
+        uploadFile(facturaInput.files[0], `cobros-activaciones/${taller.id}/${id}`),
+        uploadFile(procesoInput.files[0], `cobros-activaciones/${taller.id}/${id}`),
+        uploadFile(activacionInput.files[0], `cobros-activaciones/${taller.id}/${id}`),
+      ]);
+      const registro = {
+        id,
+        taller_id: taller.id,
+        taller_nombre: taller.nombre,
+        cliente_nombre: clienteNombre,
+        moto_modelo: motoModelo,
+        moto_serie: motoSerie,
+        descripcion,
+        foto_proceso: fotoProceso,
+        foto_activacion: fotoActivacion,
+        factura_url: facturaUrl,
+        factura_numero: numero,
+        factura_monto: monto,
+      };
+      await createActivacionTaller(registro);
+      const emailOk = await notifyCobroActivacionSolicitado({ ...registro, taller_nombre: taller.nombre, taller_id: taller.id });
+      toast('Cobro de activación enviado.' + (emailOk ? ' Se notificó a Postventa.' : ' ⚠ No se pudo notificar por correo (revisa la consola).'), emailOk ? 'ok' : 'err');
+      state.tallerSub = 'mis-cobros-activacion';
+      render();
+    }catch(err){
+      console.error(err);
+      errEl.textContent = 'No se pudo enviar el cobro. Revisa tu conexión e intenta de nuevo.';
+      errEl.style.display = 'block';
+      btn.disabled = false; btn.textContent = 'Enviar cobro';
+    }
+  });
+}
+
+function renderMisCobrosActivacion(taller){
+  return `
+  ${tallerBackButton()}
+  <div class="eyebrow">Cobro de activaciones</div>
+  <h1 class="page-title">Mis cobros de activación</h1>
+  <p class="page-sub">Solicitudes de pago por activaciones generadas por ${esc(taller.nombre)}.</p>
+  <div id="mis-cobros-activacion-list"><div class="empty">Cargando...</div></div>
+  `;
+}
+
+async function bindMisCobrosActivacion(taller){
+  bindTallerBack();
+  const items = await getActivacionesForTaller(taller.id);
+  const container = document.getElementById('mis-cobros-activacion-list');
+  if(!items.length){
+    container.innerHTML = `<div class="empty">Aún no has enviado ningún cobro de activación.</div>`;
+    return;
+  }
+  container.innerHTML = items.map(a => {
+    const pagada = a.pago_estatus === 'pagada';
+    return `
+    <div class="card" style="margin-bottom:12px;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+        <div>
+          <div class="id-pill" style="margin-bottom:6px;">${a.id}</div>
+          <div style="font-weight:700; font-size:13.5px;">${esc(a.cliente_nombre)} · ${esc(a.moto_modelo)}</div>
+          ${a.moto_serie ? `<div style="color:var(--text-muted); font-size:12px; margin-top:2px;">Serie: ${esc(a.moto_serie)}</div>` : ''}
+          ${a.descripcion ? `<div style="color:var(--text-muted); font-size:12.5px; margin-top:4px; max-width:480px;">${esc(a.descripcion)}</div>` : ''}
+          <div style="color:var(--text-faint); font-size:11.5px; margin-top:4px;">${fmtDate((a.created_at||'').slice(0,10))}${a.factura_numero ? ` · Factura ${esc(a.factura_numero)}` : ''}${(a.factura_monto !== null && a.factura_monto !== undefined) ? ` · ${fmtMoney(a.factura_monto)}` : ''}</div>
+        </div>
+        <span class="badge ${pagada ? 'badge-success' : 'badge-yellow'}">${pagada ? 'Pagada' : 'Pendiente de pago'}</span>
+      </div>
+      <div style="display:flex; gap:10px; margin-top:12px; flex-wrap:wrap;">
+        <a href="${a.factura_url}" target="_blank" class="btn btn-ghost btn-sm">📄 Ver factura</a>
+        <a href="${a.foto_proceso}" target="_blank" class="btn btn-ghost btn-sm">🖼️ Ver foto de proceso</a>
+        <a href="${a.foto_activacion}" target="_blank" class="btn btn-ghost btn-sm">🖼️ Ver foto de activación</a>
+      </div>
+    </div>`;
+  }).join('');
+}
+
 /* ---- PDF: Comprobante de Garantía Finalizada ---- */
 function buildGarantiaFinalizadaPDF(g){
   const { jsPDF } = window.jspdf;
@@ -6358,12 +6639,65 @@ function renderJefeTallerSolicitudesList(solicitudes){
   bindComentariosBlocks(container, 'staff', (staff.nombre || staff.usuario || 'Jefe de taller'), abiertos, loadJefeTallerSolicitudes);
 }
 
+/* ---- Panel de Contabilidad (acceso propio, separado del panel
+   administrativo general): mueve el estatus de pago de Garantías y de Cobro
+   de activaciones — las dos colas de pago que le llegan por correo. Un
+   selector simple alterna entre las dos, reutilizando exactamente el mismo
+   render/carga/binding que usa Panel admin, para que ambas vistas se
+   mantengan siempre idénticas. ---- */
+function renderContabilidadStaffPanel(){
+  const staff = state.contabilidadAuthed;
+  const sub = state.contabilidadSection || 'garantias';
+  return `
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; margin-bottom:8px;">
+    <div>
+      <div class="eyebrow">Contabilidad · Panel de pagos</div>
+      <h1 class="page-title">Pagos de Letbe</h1>
+      <p class="page-sub">Sesión de ${esc(staff.nombre || staff.usuario)}. Da seguimiento a las facturas de Garantías y de Cobro de activaciones, y marca cada una como pagada en cuanto se procese.</p>
+    </div>
+    <button class="btn btn-ghost btn-sm" id="contabilidad-logout">Cerrar sesión</button>
+  </div>
+  <div class="alert-tabs" id="contabilidad-section-tabs" style="margin-bottom:20px;">
+    <button class="alert-tab ${sub==='garantias'?'active':''}" data-sub="garantias">Pagos de garantías</button>
+    <button class="alert-tab ${sub==='activaciones'?'active':''}" data-sub="activaciones">Pagos de activaciones</button>
+  </div>
+  <div id="contabilidad-content">
+    ${sub === 'activaciones' ? renderPagosActivacionesSection({ showAccessManagement: false }) : renderPagosGarantiasSection()}
+  </div>
+  `;
+}
+
+async function bindContabilidadStaffPanel(){
+  document.getElementById('contabilidad-logout').addEventListener('click', ()=>{
+    state.contabilidadAuthed = null;
+    state.adminLoginMode = null;
+    render();
+  });
+  document.querySelectorAll('#contabilidad-section-tabs .alert-tab').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      state.contabilidadSection = btn.dataset.sub;
+      render();
+    });
+  });
+  const sub = state.contabilidadSection || 'garantias';
+  if(sub === 'activaciones'){
+    await loadPagosActivacionesAdmin();
+    bindPagosActivacionesSection();
+  }else{
+    await loadPagosGarantiasAdmin();
+    bindPagosGarantiasSection();
+  }
+}
+
 function renderAdmin(){
   if(state.jefeTallerAuthed){
     return renderJefeTallerStaffPanel();
   }
   if(state.refaccionesStaffAuthed){
     return renderRefaccionesStaffPanel();
+  }
+  if(state.contabilidadAuthed){
+    return renderContabilidadStaffPanel();
   }
   if(!state.adminAuthed){
     if(state.adminLoginMode === 'refacciones'){
@@ -6392,6 +6726,19 @@ function renderAdmin(){
         <button type="button" class="btn btn-ghost btn-block" id="jefe-taller-back" style="margin-top:12px;">← Acceso general de staff</button>
       </div>`;
     }
+    if(state.adminLoginMode === 'contabilidad'){
+      return `
+      <div class="eyebrow">Acceso restringido</div>
+      <h1 class="page-title">Contabilidad · Acceso de staff</h1>
+      <p class="page-sub">Uso exclusivo del equipo de Contabilidad: estatus de pago de Garantías y de Cobro de activaciones.</p>
+      <div class="card" style="max-width:400px;">
+        <div class="field"><label>Usuario</label><input id="contabilidad-user" class="mono" placeholder="usuario" autocomplete="off"></div>
+        <div class="field"><label>Contraseña</label><input id="contabilidad-pass" type="password" placeholder="••••••"></div>
+        <button class="btn btn-primary btn-block" id="contabilidad-login">Entrar</button>
+        <p id="contabilidad-error" style="color:var(--danger); font-size:12.5px; margin-top:10px; display:none;"></p>
+        <button type="button" class="btn btn-ghost btn-block" id="contabilidad-back" style="margin-top:12px;">← Acceso general de staff</button>
+      </div>`;
+    }
     return `
     <div class="eyebrow">Acceso restringido</div>
     <h1 class="page-title">Panel administrativo</h1>
@@ -6402,6 +6749,7 @@ function renderAdmin(){
       <p style="color:var(--text-faint); font-size:11.5px; margin-top:12px;">Acceso exclusivo para el equipo de servicio Letbe.</p>
       <button type="button" class="btn btn-ghost btn-block" id="ref-staff-switch" style="margin-top:14px;">🔧 Acceso del equipo de Refacciones</button>
       <button type="button" class="btn btn-ghost btn-block" id="jefe-taller-switch" style="margin-top:10px;">👷 Acceso del Jefe de taller</button>
+      <button type="button" class="btn btn-ghost btn-block" id="contabilidad-switch" style="margin-top:10px;">💰 Acceso de Contabilidad</button>
     </div>`;
   }
   return `
@@ -6415,6 +6763,7 @@ function renderAdmin(){
       <button class="alert-tab ${state.adminSection==='garantias'?'active':''}" data-section="garantias">Reporte de fallas</button>
       <button class="alert-tab ${state.adminSection==='garantias_taller'?'active':''}" data-section="garantias_taller">Garantías</button>
       <button class="alert-tab ${state.adminSection==='pagos_garantias'?'active':''}" data-section="pagos_garantias">Pagos de garantías</button>
+      <button class="alert-tab ${state.adminSection==='pagos_activaciones'?'active':''}" data-section="pagos_activaciones">Pagos de activaciones</button>
       <button class="alert-tab ${state.adminSection==='talleres'?'active':''}" data-section="talleres">Talleres</button>
       <button class="alert-tab ${state.adminSection==='distribuidores'?'active':''}" data-section="distribuidores">Distribuidores</button>
       <button class="alert-tab ${state.adminSection==='retail'?'active':''}" data-section="retail">Retail</button>
@@ -6656,7 +7005,7 @@ function renderPagosGarantiasSection(){
         <button class="alert-tab" data-tab="pagada">Pagadas</button>
       </div>
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
-        <button class="btn btn-ghost btn-sm" id="pagos-garantias-send-report-btn">✉️ Enviar reporte ahora</button>
+        <button class="btn btn-ghost btn-sm" id="pagos-garantias-send-report-btn" title="Manda un solo correo con las facturas de garantías Y de activaciones.">✉️ Enviar reporte ahora</button>
         <button class="btn btn-ghost btn-sm" id="pagos-garantias-export-btn">📊 Descargar Excel</button>
       </div>
     </div>
@@ -6778,6 +7127,7 @@ function renderPagosGarantiasAdminList(items){
 // y la tabla HTML del correo — para que ambos muestren siempre lo mismo.
 function pagoGarantiaRow(g){
   return {
+    tipo: 'Garantía',
     folio: g.id,
     taller: `${g.taller_nombre || ''} (${g.taller_id || ''})`,
     cliente: g.cliente_nombre || '',
@@ -6864,14 +7214,19 @@ async function exportPagosGarantiasExcel(){
   }
 }
 
-// Arma la tabla HTML (con las filas no pagadas en rojo) que se inserta en el
-// correo del reporte semanal — vía la variable {{{tabla_html}}} de la
+// Arma la tabla HTML combinada (garantías + cobro de activaciones, en una
+// sola tabla con columna "Tipo", ordenada por fecha de envío) que se inserta
+// en el correo del reporte — vía la variable {{{tabla_html}}} de la
 // plantilla EMAILJS_TEMPLATE_ID_REPORTE_PAGOS (ver esa constante más arriba
-// para las instrucciones de configuración en el dashboard de EmailJS).
-function buildReportePagosHTMLTable(items){
-  const rows = items.map(pagoGarantiaRow);
+// para las instrucciones de configuración en el dashboard de EmailJS). Las
+// filas no pagadas se resaltan en rojo, igual que antes de combinarlas.
+function buildReporteCombinadoHTMLTable(garantiaItems, activacionItems){
+  const rows = [
+    ...(garantiaItems || []).map(pagoGarantiaRow),
+    ...(activacionItems || []).map(cobroActivacionRow),
+  ].sort((a, b) => (b.fecha_solicitud ? b.fecha_solicitud.getTime() : 0) - (a.fecha_solicitud ? a.fecha_solicitud.getTime() : 0));
   if(!rows.length){
-    return '<p>No hay pagos de garantías registrados por ahora.</p>';
+    return '<p>No hay pagos de garantías ni de activaciones registrados por ahora.</p>';
   }
   const trs = rows.map(r => {
     const style = r.pagada
@@ -6879,6 +7234,7 @@ function buildReportePagosHTMLTable(items){
       : 'background:#fdecea; color:#7a0c14; font-weight:bold;';
     return `
       <tr style="${style}">
+        <td style="padding:6px 10px; border:1px solid #ccc;">${esc(r.tipo)}</td>
         <td style="padding:6px 10px; border:1px solid #ccc;">${esc(r.folio)}</td>
         <td style="padding:6px 10px; border:1px solid #ccc;">${esc(r.taller)}</td>
         <td style="padding:6px 10px; border:1px solid #ccc;">${esc(r.cliente)}</td>
@@ -6890,10 +7246,11 @@ function buildReportePagosHTMLTable(items){
   }).join('');
   const pendientesCount = rows.filter(r => !r.pagada).length;
   return `
-    <p>${pendientesCount} factura${pendientesCount===1?'':'s'} pendiente${pendientesCount===1?'':'s'} de pago de ${rows.length} en total. Las filas en rojo son las que aún no se han pagado.</p>
+    <p>${pendientesCount} factura${pendientesCount===1?'':'s'} pendiente${pendientesCount===1?'':'s'} de pago de ${rows.length} en total (garantías + activaciones). Las filas en rojo son las que aún no se han pagado.</p>
     <table style="border-collapse:collapse; font-family:Arial,sans-serif; font-size:13px; width:100%;">
       <thead>
         <tr style="background:#17181F; color:#FFC72C;">
+          <th style="padding:6px 10px; border:1px solid #ccc; text-align:left;">Tipo</th>
           <th style="padding:6px 10px; border:1px solid #ccc; text-align:left;">Folio</th>
           <th style="padding:6px 10px; border:1px solid #ccc; text-align:left;">Taller</th>
           <th style="padding:6px 10px; border:1px solid #ccc; text-align:left;">Cliente</th>
@@ -6907,12 +7264,17 @@ function buildReportePagosHTMLTable(items){
     </table>`;
 }
 
-// Botón "Enviar reporte ahora" en Panel admin — dispara manualmente el mismo
-// correo que se programa semanalmente vía la función de Supabase (ver
-// supabase/functions/reporte-pagos-garantias/index.ts). Útil para probar la
+// Botón "Enviar reporte ahora" — se usa tanto desde Pagos de garantías como
+// desde Pagos de activaciones (Panel admin y panel de Contabilidad; ver
+// bindPagosGarantiasSection() / bindPagosActivacionesSection() más abajo),
+// y manda siempre el MISMO correo combinado con ambos tipos de factura, sin
+// importar desde qué pestaña se presione. btnId indica qué botón deshabilitar
+// mientras se envía (cada pestaña tiene el suyo). Es el mismo correo que se
+// programa semanalmente vía la función de Supabase (ver
+// supabase/functions/reporte-pagos-garantias/index.ts) — útil para probar la
 // plantilla de EmailJS o para forzar un envío fuera del horario programado.
-async function enviarReportePagosGarantiasAhora(){
-  const btn = document.getElementById('pagos-garantias-send-report-btn');
+async function enviarReportePagosGarantiasAhora(btnId){
+  const btn = document.getElementById(btnId || 'pagos-garantias-send-report-btn');
   const originalText = btn ? btn.textContent : '';
   if(!EMAILJS_TEMPLATE_ID_REPORTE_PAGOS){
     toast('Falta configurar EMAILJS_TEMPLATE_ID_REPORTE_PAGOS en el código antes de poder enviar el reporte.', 'err');
@@ -6920,14 +7282,17 @@ async function enviarReportePagosGarantiasAhora(){
   }
   if(btn){ btn.disabled = true; btn.textContent = 'Enviando...'; }
   try{
-    const items = window.__allPagosGarantias || await getAllPagosGarantias() || [];
-    const tablaHtml = buildReportePagosHTMLTable(items);
+    const [garantiasRaw, activacionesRaw] = await Promise.all([
+      window.__allPagosGarantias ? Promise.resolve(window.__allPagosGarantias) : getAllPagosGarantias(),
+      window.__allCobrosActivaciones ? Promise.resolve(window.__allCobrosActivaciones) : getAllCobrosActivaciones(),
+    ]);
+    const tablaHtml = buildReporteCombinadoHTMLTable(garantiasRaw || [], activacionesRaw || []);
     const ok = await sendEmailJS(EMAILJS_TEMPLATE_ID_REPORTE_PAGOS, {
-      tipo_evento: 'Reporte semanal de pagos de garantías',
+      tipo_evento: 'Reporte de pagos de garantías y activaciones',
       tabla_html: tablaHtml,
       fecha_evento: new Date().toLocaleString('es-MX'),
     });
-    if(ok) logEmailSent('Reporte semanal de pagos de garantías (manual)');
+    if(ok) logEmailSent('Reporte de pagos de garantías y activaciones (manual)');
     toast(ok ? 'Reporte enviado por correo.' : '⚠ No se pudo enviar el reporte (revisa la consola).', ok ? 'ok' : 'err');
   }catch(err){
     console.error(err);
@@ -6935,6 +7300,393 @@ async function enviarReportePagosGarantiasAhora(){
   }finally{
     if(btn){ btn.disabled = false; btn.textContent = originalText; }
   }
+}
+
+/* ---- Admin: Pagos de activaciones (factura + fotos subidas por el taller
+   para cobrar una activación) — mismo patrón que Pagos de garantías, en una
+   tabla separada porque el modelo de datos es distinto (sin cliente/moto ya
+   registrados, sin comprobante firmado, con dos fotos en vez de una). ---- */
+function renderPagosActivacionesSection(opts){
+  opts = opts || {};
+  const accessManagementBlock = opts.showAccessManagement ? `
+    <div style="margin-bottom:28px; padding-bottom:24px; border-bottom:1px solid var(--border);">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+        <div>
+          <h3 style="font-family:'Archivo Black'; font-size:15px; margin:0 0 4px;">Accesos del equipo de Contabilidad</h3>
+          <p style="color:var(--text-muted); font-size:12.5px; margin:0;">Usuario y contraseña propios para que Contabilidad entre a su panel exclusivo y mueva el estatus de pago de Garantías y de Cobro de activaciones, sin usar el código general de staff.</p>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="staff-contabilidad-add-btn">+ Nuevo usuario</button>
+      </div>
+      <div class="card" style="padding:0; overflow:hidden;">
+        <div style="overflow-x:auto;">
+          <table><thead><tr><th>Usuario</th><th>Nombre</th><th>Contraseña</th><th>Estatus</th><th></th></tr></thead>
+          <tbody id="staff-contabilidad-tbody"></tbody></table>
+        </div>
+      </div>
+    </div>
+  ` : '';
+  return `
+  <div class="alert-section">
+    ${accessManagementBlock}
+    <p style="color:var(--text-muted); font-size:12.5px; margin:0 0 14px;">Facturas y fotos de proceso/activación enviadas por talleres para cobrar una activación — este es el único canal por el que se solicita ese pago.</p>
+    <div class="grid3" id="pago-activacion-stats" style="margin-bottom:20px;"></div>
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+      <div class="alert-tabs" id="pago-activacion-tabs">
+        <button class="alert-tab active" data-tab="all">Todas</button>
+        <button class="alert-tab" data-tab="pendiente">Pendientes de pago</button>
+        <button class="alert-tab" data-tab="pagada">Pagadas</button>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn btn-ghost btn-sm" id="pagos-activaciones-send-report-btn" title="Manda un solo correo con las facturas de garantías Y de activaciones.">✉️ Enviar reporte ahora</button>
+        <button class="btn btn-ghost btn-sm" id="pagos-activaciones-export-btn">📊 Descargar Excel</button>
+      </div>
+    </div>
+    <div id="admin-pagos-activaciones-list"></div>
+  </div>
+  `;
+}
+
+async function loadPagosActivacionesAdmin(){
+  const items = await getAllCobrosActivaciones();
+  const container = document.getElementById('admin-pagos-activaciones-list');
+  if(items === null){
+    container.innerHTML = `<div class="empty" style="color:var(--danger); padding:24px;">No se pudo conectar a la base de datos.</div>`;
+    window.__allCobrosActivaciones = [];
+    return;
+  }
+  window.__allCobrosActivaciones = items;
+  const pendientes = items.filter(a => a.pago_estatus !== 'pagada').length;
+  const pagadas = items.filter(a => a.pago_estatus === 'pagada').length;
+  const montoPendiente = items.filter(a => a.pago_estatus !== 'pagada').reduce((sum, a) => sum + (Number(a.factura_monto) || 0), 0);
+  document.getElementById('pago-activacion-stats').innerHTML = `
+    <div class="card"><div class="eyebrow">Total con factura enviada</div><div class="display" style="font-size:28px;">${items.length}</div></div>
+    <div class="card"><div class="eyebrow">Pendientes de pago</div><div class="display" style="font-size:28px; color:var(--danger);">${pendientes}</div><div style="font-size:11.5px; color:var(--text-faint); margin-top:4px;">${fmtMoney(montoPendiente)} sin pagar</div></div>
+    <div class="card"><div class="eyebrow">Pagadas</div><div class="display" style="font-size:28px; color:var(--success);">${pagadas}</div></div>
+  `;
+  renderPagosActivacionesAdminList(items);
+}
+
+function renderPagosActivacionesAdminList(items){
+  const tab = state.pagoActivacionTab || 'all';
+  const filtered = items.filter(a => {
+    if(tab === 'all') return true;
+    if(tab === 'pagada') return a.pago_estatus === 'pagada';
+    return a.pago_estatus !== 'pagada';
+  });
+  const container = document.getElementById('admin-pagos-activaciones-list');
+  if(!container) return;
+  if(!filtered.length){
+    container.innerHTML = `<div class="empty" style="padding:24px;">Sin cobros en esta categoría.</div>`;
+    return;
+  }
+  container.innerHTML = filtered.map(a => {
+    const pagada = a.pago_estatus === 'pagada';
+    return `
+    <div class="card" style="margin-bottom:12px; ${!pagada ? 'border-left:3px solid var(--danger);' : ''}">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+        <div>
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <span class="id-pill">${a.id}</span>
+            <b style="font-size:13.5px;">${esc(a.cliente_nombre)}</b>
+            <span style="color:var(--text-faint); font-size:12px;">${esc(a.moto_modelo)}</span>
+          </div>
+          <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Taller: ${esc(a.taller_nombre)} (${esc(a.taller_id)})</div>
+          <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">
+            Enviada el ${a.pago_fecha_solicitud ? new Date(a.pago_fecha_solicitud).toLocaleString('es-MX') : '—'}
+            ${a.factura_numero ? ` · Factura ${esc(a.factura_numero)}` : ''}
+            ${(a.factura_monto !== null && a.factura_monto !== undefined) ? ` · <b style="color:var(--text);">${fmtMoney(a.factura_monto)}</b>` : ''}
+          </div>
+        </div>
+        <span class="badge ${pagada ? 'badge-success' : 'badge-danger'}">${pagada ? 'Pagada' : 'Pendiente de pago'}</span>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
+        <a href="${a.factura_url}" target="_blank" class="btn btn-ghost btn-sm">📄 Ver factura</a>
+        <a href="${a.foto_proceso}" target="_blank" class="btn btn-ghost btn-sm">🖼️ Ver foto de proceso</a>
+        <a href="${a.foto_activacion}" target="_blank" class="btn btn-ghost btn-sm">🖼️ Ver foto de activación</a>
+      </div>
+      <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
+        <div class="field" style="margin-bottom:10px;">
+          <label>Notas de pago (referencia, fecha de transferencia, etc.)</label>
+          <textarea class="pa-notas-input" data-gt="${a.id}" placeholder="Ej. Pagado por transferencia el 21/08, referencia 00123...">${esc(a.pago_notas || '')}</textarea>
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+          <button class="btn ${pagada ? 'btn-ghost' : 'btn-primary'} btn-sm" data-pa-toggle="${a.id}" data-nuevo-estatus="${pagada ? 'pendiente' : 'pagada'}">${pagada ? 'Marcar como pendiente' : '✓ Marcar como pagada'}</button>
+          <button class="btn btn-ghost btn-sm" data-pa-save-notas="${a.id}">Guardar notas</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  container.querySelectorAll('[data-pa-toggle]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.paToggle;
+      const nuevoEstatus = btn.dataset.nuevoEstatus;
+      const notas = container.querySelector(`.pa-notas-input[data-gt="${id}"]`);
+      btn.disabled = true; btn.textContent = 'Guardando...';
+      try{
+        await updateActivacionTaller(id, {
+          pago_estatus: nuevoEstatus,
+          pago_notas: notas ? notas.value.trim() : '',
+          pago_fecha_pagada: nuevoEstatus === 'pagada' ? new Date().toISOString() : null,
+        });
+        toast(nuevoEstatus === 'pagada' ? 'Marcada como pagada.' : 'Marcada como pendiente de pago.', 'ok');
+        await loadPagosActivacionesAdmin();
+      }catch(err){
+        console.error(err);
+        toast('No se pudo actualizar. Intenta de nuevo.', 'err');
+        btn.disabled = false;
+      }
+    });
+  });
+
+  container.querySelectorAll('[data-pa-save-notas]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.paSaveNotas;
+      const notas = container.querySelector(`.pa-notas-input[data-gt="${id}"]`);
+      btn.disabled = true; btn.textContent = 'Guardando...';
+      try{
+        await updateActivacionTaller(id, { pago_notas: notas.value.trim() });
+        toast('Notas guardadas.', 'ok');
+      }catch(err){
+        console.error(err);
+        toast('No se pudo guardar. Intenta de nuevo.', 'err');
+      }
+      btn.disabled = false; btn.textContent = 'Guardar notas';
+    });
+  });
+}
+
+// Fila "plana" de un cobro de activación, compartida entre el Excel
+// descargable y la tabla HTML del correo.
+function cobroActivacionRow(a){
+  return {
+    tipo: 'Activación',
+    folio: a.id,
+    taller: `${a.taller_nombre || ''} (${a.taller_id || ''})`,
+    cliente: a.cliente_nombre || '',
+    moto: a.moto_modelo || '',
+    factura_numero: a.factura_numero || '',
+    monto: (a.factura_monto !== null && a.factura_monto !== undefined) ? Number(a.factura_monto) : null,
+    fecha_solicitud: a.pago_fecha_solicitud ? new Date(a.pago_fecha_solicitud) : null,
+    fecha_pagada: a.pago_fecha_pagada ? new Date(a.pago_fecha_pagada) : null,
+    pagada: a.pago_estatus === 'pagada',
+    notas: a.pago_notas || '',
+  };
+}
+
+// Descarga un .xlsx real con los cobros no pagados resaltados en rojo (misma
+// técnica que exportPagosGarantiasExcel: ExcelJS, no SheetJS).
+async function exportPagosActivacionesExcel(){
+  const btn = document.getElementById('pagos-activaciones-export-btn');
+  const originalText = btn ? btn.textContent : '';
+  if(btn){ btn.disabled = true; btn.textContent = 'Generando...'; }
+  try{
+    const items = window.__allCobrosActivaciones || await getAllCobrosActivaciones() || [];
+    const rows = items.map(cobroActivacionRow);
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Pagos de activaciones');
+    ws.columns = [
+      { header: 'Folio', key: 'folio', width: 16 },
+      { header: 'Taller', key: 'taller', width: 28 },
+      { header: 'Cliente', key: 'cliente', width: 24 },
+      { header: 'Moto', key: 'moto', width: 16 },
+      { header: 'N° de factura', key: 'factura_numero', width: 16 },
+      { header: 'Monto', key: 'monto', width: 14 },
+      { header: 'Fecha de envío', key: 'fecha_solicitud', width: 18 },
+      { header: 'Estatus', key: 'estatus', width: 16 },
+      { header: 'Fecha de pago', key: 'fecha_pagada', width: 18 },
+      { header: 'Notas', key: 'notas', width: 30 },
+    ];
+    ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF17181F' } };
+    ws.getRow(1).font = { bold: true, color: { argb: 'FFFFC72C' } };
+    if(!rows.length){
+      ws.addRow({ folio: 'Aún no hay cobros de activación registrados.' });
+    }else{
+      rows.forEach(r => {
+        const row = ws.addRow({
+          folio: r.folio,
+          taller: r.taller,
+          cliente: r.cliente,
+          moto: r.moto,
+          factura_numero: r.factura_numero,
+          monto: r.monto,
+          fecha_solicitud: r.fecha_solicitud ? r.fecha_solicitud.toLocaleString('es-MX') : '',
+          estatus: r.pagada ? 'Pagada' : 'Pendiente de pago',
+          fecha_pagada: r.fecha_pagada ? r.fecha_pagada.toLocaleString('es-MX') : '',
+          notas: r.notas,
+        });
+        row.getCell('monto').numFmt = '$#,##0.00';
+        if(!r.pagada){
+          row.eachCell(cell => {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFC7CE' } };
+            cell.font = { color: { argb: 'FF9C0006' } };
+          });
+        }
+      });
+    }
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Letbe_Pagos_Activaciones_${new Date().toISOString().slice(0,10)}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast('Reporte de cobros generado.', 'ok');
+  }catch(err){
+    console.error(err);
+    toast('No se pudo generar el reporte.', 'err');
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = originalText; }
+  }
+}
+
+function loadStaffContabilidadAdmin(){
+  return (async ()=>{
+    const tbody = document.getElementById('staff-contabilidad-tbody');
+    if(!tbody) return;
+    const items = await getAllStaffContabilidad();
+    if(items === null){
+      tbody.innerHTML = `<tr><td colspan="5"><div class="empty">No se pudo conectar a la base de datos.</div></td></tr>`;
+      return;
+    }
+    window.__allStaffContabilidad = items;
+    tbody.innerHTML = items.length ? items.map(s => `
+      <tr>
+        <td class="mono">${esc(s.usuario)}</td>
+        <td>${esc(s.nombre || '—')}</td>
+        <td class="mono">${esc(s.password)}</td>
+        <td><span class="badge ${s.activo ? 'badge-success' : 'badge-danger'}">${s.activo ? 'Activo' : 'Dado de baja'}</span></td>
+        <td><button class="btn btn-ghost btn-sm" data-toggle-staff-contabilidad="${esc(s.usuario)}" data-activo="${s.activo}">${s.activo ? 'Dar de baja' : 'Reactivar'}</button></td>
+      </tr>
+    `).join('') : `<tr><td colspan="5"><div class="empty">Aún no hay usuarios de Contabilidad registrados.</div></td></tr>`;
+
+    tbody.querySelectorAll('[data-toggle-staff-contabilidad]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const usuario = btn.dataset.toggleStaffContabilidad;
+        const nuevoActivo = !(btn.dataset.activo === 'true');
+        btn.disabled = true;
+        try{
+          await updateStaffContabilidadActivo(usuario, nuevoActivo);
+          toast(nuevoActivo ? 'Usuario reactivado.' : 'Usuario dado de baja.', 'ok');
+          await loadStaffContabilidadAdmin();
+        }catch(err){
+          console.error(err);
+          toast('No se pudo actualizar el usuario.', 'err');
+          btn.disabled = false;
+        }
+      });
+    });
+  })();
+}
+
+function openAddStaffContabilidadModal(){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="eyebrow">Contabilidad</div>
+      <h2 style="font-family:'Archivo Black'; font-size:20px; margin:0 0 16px;">Nuevo usuario de Contabilidad</h2>
+      <form id="staff-contabilidad-form">
+        <div class="field"><label>Nombre del colaborador</label><input required name="nombre" placeholder="Ej. María García"></div>
+        <div class="field"><label>Usuario</label><input required name="usuario" class="mono" placeholder="Ej. maria.garcia" autocomplete="off"></div>
+        <p style="color:var(--text-faint); font-size:11.5px; margin:-6px 0 6px;">La contraseña se genera automáticamente y se muestra al guardar.</p>
+        <div style="display:flex; gap:10px; margin-top:6px;">
+          <button type="button" class="btn btn-ghost" id="cancel-staff-contabilidad" style="flex:1;">Cancelar</button>
+          <button type="submit" class="btn btn-primary" style="flex:1;">Guardar usuario</button>
+        </div>
+        <p id="staff-contabilidad-form-error" style="color:var(--danger); font-size:12.5px; margin-top:10px; display:none;"></p>
+      </form>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#cancel-staff-contabilidad').addEventListener('click', ()=> overlay.remove());
+  overlay.querySelector('#staff-contabilidad-form').addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const f = e.target;
+    const btn = f.querySelector('button[type=submit]');
+    const errEl = document.getElementById('staff-contabilidad-form-error');
+    errEl.style.display = 'none';
+    const usuario = f.usuario.value.trim().toLowerCase();
+    if(!usuario){ return; }
+    btn.disabled = true; btn.textContent = 'Guardando...';
+    try{
+      const staff = {
+        usuario,
+        nombre: f.nombre.value.trim(),
+        password: genTallerPassword(),
+        activo: true,
+      };
+      await createStaffContabilidad(staff);
+      overlay.remove();
+      await loadStaffContabilidadAdmin();
+      showStaffContabilidadCredentialsModal(staff);
+    }catch(err){
+      console.error(err);
+      errEl.textContent = 'No se pudo guardar el usuario. Puede que ya exista ese usuario.';
+      errEl.style.display = 'block';
+      btn.disabled = false; btn.textContent = 'Guardar usuario';
+    }
+  });
+}
+
+function showStaffContabilidadCredentialsModal(staff){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="eyebrow">Usuario registrado</div>
+      <h2 style="font-family:'Archivo Black'; font-size:20px; margin:0 0 10px;">Comparte estos accesos</h2>
+      <p style="color:var(--text-muted); font-size:13px; margin:0 0 16px;">${esc(staff.nombre || staff.usuario)} ya puede entrar al panel de "Contabilidad" con estos datos:</p>
+      <div style="background:var(--surface-2); border:1px dashed var(--yellow); border-radius:10px; padding:16px; margin-bottom:20px;">
+        <div style="margin-bottom:8px;"><span style="color:var(--text-muted); font-size:12px;">Usuario</span><br><span class="id-pill" style="font-size:16px;">${esc(staff.usuario)}</span></div>
+        <div><span style="color:var(--text-muted); font-size:12px;">Contraseña</span><br><span class="id-pill" style="font-size:16px;">${esc(staff.password)}</span></div>
+      </div>
+      <button class="btn btn-primary btn-block" id="close-staff-contabilidad-cred">Entendido</button>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#close-staff-contabilidad-cred').addEventListener('click', ()=> overlay.remove());
+}
+
+// Ata los tabs de filtro y los botones (Excel / enviar reporte) de la sección
+// Pagos de garantías. Se usa tanto desde el Panel admin general como desde el
+// panel exclusivo de Contabilidad (bindContabilidadStaffPanel), para no
+// duplicar esta lógica en los dos lugares.
+function bindPagosGarantiasSection(){
+  state.pagoGarantiaTab = state.pagoGarantiaTab || 'all';
+  document.querySelectorAll('#pago-garantia-tabs .alert-tab').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      state.pagoGarantiaTab = btn.dataset.tab;
+      document.querySelectorAll('#pago-garantia-tabs .alert-tab').forEach(b => b.classList.toggle('active', b===btn));
+      renderPagosGarantiasAdminList(window.__allPagosGarantias || []);
+    });
+  });
+  document.getElementById('pagos-garantias-export-btn').addEventListener('click', exportPagosGarantiasExcel);
+  // enviarReportePagosGarantiasAhora() manda el reporte COMBINADO (garantías
+  // + activaciones) sin importar desde qué pestaña se dispare — se le pasa
+  // el id de este botón explícitamente en un wrapper (no directo como
+  // handler) para no pasarle por accidente el objeto Event de "click" como
+  // si fuera el btnId.
+  document.getElementById('pagos-garantias-send-report-btn').addEventListener('click', ()=> enviarReportePagosGarantiasAhora('pagos-garantias-send-report-btn'));
+}
+
+// Misma idea que bindPagosGarantiasSection() pero para Pagos de activaciones.
+function bindPagosActivacionesSection(){
+  state.pagoActivacionTab = state.pagoActivacionTab || 'all';
+  document.querySelectorAll('#pago-activacion-tabs .alert-tab').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      state.pagoActivacionTab = btn.dataset.tab;
+      document.querySelectorAll('#pago-activacion-tabs .alert-tab').forEach(b => b.classList.toggle('active', b===btn));
+      renderPagosActivacionesAdminList(window.__allCobrosActivaciones || []);
+    });
+  });
+  document.getElementById('pagos-activaciones-export-btn').addEventListener('click', exportPagosActivacionesExcel);
+  // Mismo correo combinado que el botón de Pagos de garantías (ver el
+  // comentario de enviarReportePagosGarantiasAhora() más arriba) — este
+  // botón manda exactamente el mismo reporte, solo cambia qué botón se
+  // deshabilita/muestra "Enviando..." mientras se envía.
+  document.getElementById('pagos-activaciones-send-report-btn').addEventListener('click', ()=> enviarReportePagosGarantiasAhora('pagos-activaciones-send-report-btn'));
 }
 
 /* ---- Admin: Órdenes generadas por talleres ---- */
@@ -9628,6 +10380,36 @@ async function bindAdmin(){
       });
       return;
     }
+    if(state.adminLoginMode === 'contabilidad'){
+      const go = async ()=>{
+        const usuario = document.getElementById('contabilidad-user').value.trim().toLowerCase();
+        const pass = document.getElementById('contabilidad-pass').value;
+        const errEl = document.getElementById('contabilidad-error');
+        errEl.style.display = 'none';
+        if(!usuario || !pass) return;
+        const result = await getStaffContabilidad(usuario, pass);
+        if(result.error){
+          const msgs = {
+            notfound: 'No encontramos ese usuario.',
+            inactive: 'Este usuario fue dado de baja. Contacta a tu administrador.',
+            badpassword: 'Contraseña incorrecta.',
+            connection: result.detail || 'No se pudo conectar. Revisa tu conexión a internet.',
+          };
+          errEl.textContent = msgs[result.error] || 'Error desconocido.';
+          errEl.style.display = 'block';
+          return;
+        }
+        state.contabilidadAuthed = result.staff;
+        render();
+      };
+      document.getElementById('contabilidad-login').addEventListener('click', go);
+      document.getElementById('contabilidad-pass').addEventListener('keydown', e=>{ if(e.key==='Enter') go(); });
+      document.getElementById('contabilidad-back').addEventListener('click', ()=>{
+        state.adminLoginMode = 'general';
+        render();
+      });
+      return;
+    }
     document.getElementById('admin-login').addEventListener('click', ()=>{
       const val = document.getElementById('admin-pass').value;
       if(val === 'BEJ9-AX7U-7FY8'){
@@ -9643,6 +10425,10 @@ async function bindAdmin(){
     });
     document.getElementById('jefe-taller-switch').addEventListener('click', ()=>{
       state.adminLoginMode = 'jefe_taller';
+      render();
+    });
+    document.getElementById('contabilidad-switch').addEventListener('click', ()=>{
+      state.adminLoginMode = 'contabilidad';
       render();
     });
     return;
@@ -9805,17 +10591,14 @@ async function renderAdminSectionContent(){
     });
   }else if(state.adminSection === 'pagos_garantias'){
     content.innerHTML = renderPagosGarantiasSection();
-    state.pagoGarantiaTab = state.pagoGarantiaTab || 'all';
     await loadPagosGarantiasAdmin();
-    document.querySelectorAll('#pago-garantia-tabs .alert-tab').forEach(btn=>{
-      btn.addEventListener('click', ()=>{
-        state.pagoGarantiaTab = btn.dataset.tab;
-        document.querySelectorAll('#pago-garantia-tabs .alert-tab').forEach(b => b.classList.toggle('active', b===btn));
-        renderPagosGarantiasAdminList(window.__allPagosGarantias || []);
-      });
-    });
-    document.getElementById('pagos-garantias-export-btn').addEventListener('click', exportPagosGarantiasExcel);
-    document.getElementById('pagos-garantias-send-report-btn').addEventListener('click', enviarReportePagosGarantiasAhora);
+    bindPagosGarantiasSection();
+  }else if(state.adminSection === 'pagos_activaciones'){
+    content.innerHTML = renderPagosActivacionesSection({ showAccessManagement: true });
+    await loadPagosActivacionesAdmin();
+    await loadStaffContabilidadAdmin();
+    document.getElementById('staff-contabilidad-add-btn').addEventListener('click', openAddStaffContabilidadModal);
+    bindPagosActivacionesSection();
   }else if(state.adminSection === 'ordenes'){
     content.innerHTML = renderOrdenesAdminSection();
     state.ordenTipoTab = state.ordenTipoTab || 'all';
@@ -10126,6 +10909,9 @@ async function render(){
     }else if(state.refaccionesStaffAuthed){
       main.innerHTML = renderRefaccionesStaffPanel();
       await bindRefaccionesStaffPanel();
+    }else if(state.contabilidadAuthed){
+      main.innerHTML = renderContabilidadStaffPanel();
+      await bindContabilidadStaffPanel();
     }else{
       main.innerHTML = renderAdmin();
       await bindAdmin();
