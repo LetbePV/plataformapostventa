@@ -8,6 +8,10 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- ExcelJS: solo se usa para el reporte de Pagos de garantías, porque a diferencia de
+     SheetJS (arriba) sí soporta escribir color de relleno en celdas (filas en rojo para
+     facturas no pagadas). El resto de los exportes de la app sigue usando SheetJS. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
@@ -657,6 +661,33 @@ const EMAILJS_TEMPLATE_ID_ACTIVACION_PERIFERICO = 'template_khtdbzo';
 // Nombre exacto del distribuidor al que aplica el caso especial de arriba
 // (tal como aparece en DISTRIBUIDOR_NOMBRES / el registro del distribuidor).
 const DISTRIBUIDOR_ACTIVACION_ESPECIAL = 'Letbe Periférico';
+
+// Plantilla para avisar a Postventa/Gerencia/Contabilidad/Finanzas cuando un
+// taller sube su factura y comprobante de garantía finalizada firmado — este
+// es el único canal para solicitar el pago de una garantía. Debe
+// configurarse en el dashboard de EmailJS (duplicar cualquier plantilla
+// existente que use las mismas variables — tipo_evento, nombre_cliente,
+// codigo_cliente, modelo_moto, telefono_cliente, detalle, fecha_evento — y
+// cambiar:
+// To Email: atencionpostventa@zontesmexico.com
+// Cc: gerenciapostventa@ivo-dimao.com, contabilidadivo@ivo-dimao.com, finanzas@ivo-dimao.com
+// Mientras no se configure el ID real aquí, notifyPagoGarantiaSolicitado()
+// no envía nada (solo deja un aviso en consola) para no romper el flujo de
+// envío de factura/comprobante del taller.
+const EMAILJS_TEMPLATE_ID_PAGO_GARANTIA = 'template_ikeplos';
+
+// Plantilla para el reporte semanal de estatus de pagos (ver
+// enviarReportePagosGarantias() más abajo) — mismos destinatarios que
+// EMAILJS_TEMPLATE_ID_PAGO_GARANTIA (To: atencionpostventa@zontesmexico.com;
+// Cc: gerenciapostventa@ivo-dimao.com, contabilidadivo@ivo-dimao.com,
+// finanzas@ivo-dimao.com), pero con el cuerpo del correo en HTML: debe
+// llevar la variable {{{tabla_html}}} (con TRIPLE llave, no doble — así
+// EmailJS la inserta como HTML crudo en vez de escaparla como texto) donde
+// se quiera mostrar la tabla con las facturas no pagadas resaltadas en rojo.
+// Ver PLANTILLA_REPORTE_PAGOS_HTML más abajo para el HTML de referencia que
+// puedes pegar directamente en el editor de la plantilla en EmailJS.
+const EMAILJS_TEMPLATE_ID_REPORTE_PAGOS = 'template_yjhj2nl';
+
 // Compara nombres de distribuidor ignorando acentos, mayúsculas y espacios
 // sobrantes, para que no falle por una tilde mal colocada al capturar el dato.
 function mismoNombreDistribuidor(a, b){
@@ -731,6 +762,28 @@ async function notifyRefaccionesAutorizadas(g){
     fecha_evento: new Date().toLocaleString('es-MX'),
   });
   if(ok) logEmailSent('Refacciones autorizadas');
+  return ok;
+}
+
+// Aviso a Postventa/Gerencia/Contabilidad/Finanzas cuando un taller sube su
+// factura y comprobante de garantía finalizada firmado. Este es el único
+// canal por el que un taller puede solicitar el pago de una garantía, así
+// que este correo es la señal de "hay un pago por procesar".
+async function notifyPagoGarantiaSolicitado(g){
+  if(!EMAILJS_TEMPLATE_ID_PAGO_GARANTIA){
+    console.warn('EMAILJS_TEMPLATE_ID_PAGO_GARANTIA no configurado; no se envió el correo de solicitud de pago.');
+    return false;
+  }
+  const ok = await sendEmailJS(EMAILJS_TEMPLATE_ID_PAGO_GARANTIA, {
+    tipo_evento: 'Nueva solicitud de pago de garantía',
+    nombre_cliente: g.cliente_nombre || '',
+    codigo_cliente: g.customer_id || '',
+    modelo_moto: g.moto_modelo || '',
+    telefono_cliente: g.cliente_telefono || '',
+    detalle: `N° de garantía: ${g.id}\nTaller: ${g.taller_nombre || ''} (${g.taller_id || ''})\n${g.factura_numero ? `N° de factura: ${g.factura_numero}\n` : ''}${(g.factura_monto !== null && g.factura_monto !== undefined) ? `Monto: ${fmtMoney(g.factura_monto)}\n` : ''}\nFactura: ${g.factura_url || ''}\nComprobante de garantía finalizada firmado: ${g.comprobante_pago_url || ''}`,
+    fecha_evento: new Date().toLocaleString('es-MX'),
+  });
+  if(ok) logEmailSent('Solicitud de pago de garantía');
   return ok;
 }
 
@@ -975,6 +1028,14 @@ async function updateGarantiaTaller(id, fields){
     headers:{'Prefer':'return=representation'},
     body: JSON.stringify({ ...fields, updated_at: new Date().toISOString() }),
   });
+}
+// Garantías con factura/comprobante ya enviados por el taller — la cola de
+// pagos que da seguimiento Postventa/Gerencia/Contabilidad/Finanzas.
+async function getAllPagosGarantias(){
+  try{
+    const rows = await sbRequestAllPages('garantias_taller?factura_url=not.is.null&select=*&order=pago_fecha_solicitud.desc');
+    return rows;
+  }catch(e){ console.error(e); return null; }
 }
 
 /* ---- Refacciones (catálogo por modelo, precios público/taller) ---- */
@@ -5210,6 +5271,34 @@ async function bindMisGarantiasTaller(taller){
         ${g.comentarios_finalizacion ? `<div style="margin-top:4px;">${esc(g.comentarios_finalizacion)}</div>` : ''}
       </div>
       <button class="btn btn-ghost btn-sm" data-gt-pdf="${g.id}" style="margin-top:10px;">📄 Descargar comprobante PDF</button>` : '';
+    const pagoBlock = g.status !== 'finalizada' ? '' : (!g.factura_url ? `
+      <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
+        <div class="claim-note" style="margin-bottom:12px;">
+          <b>💳 Pago de la garantía</b>
+          <div>Sube tu factura y el comprobante de garantía finalizada ya firmado por el cliente para iniciar el pago. Este es el único canal para solicitar el pago de garantías.</div>
+        </div>
+        <div class="field"><label>Factura (PDF o imagen)</label><input type="file" accept="application/pdf,image/*" class="gt-factura-file" data-gt="${g.id}"></div>
+        <div class="field"><label>Comprobante de garantía finalizada firmado</label><input type="file" accept="application/pdf,image/*" class="gt-comprobante-pago-file" data-gt="${g.id}"></div>
+        <div style="display:flex; gap:10px; flex-wrap:wrap;">
+          <div class="field" style="flex:1; min-width:160px;"><label>N° de factura (opcional)</label><input type="text" class="gt-factura-numero" data-gt="${g.id}" placeholder="Ej. F-00123"></div>
+          <div class="field" style="flex:1; min-width:160px;"><label>Monto (opcional)</label><input type="number" step="0.01" min="0" class="gt-factura-monto" data-gt="${g.id}" placeholder="0.00"></div>
+        </div>
+        <button class="btn btn-primary btn-sm" data-pago-submit="${g.id}">Enviar para pago</button>
+        <p class="gt-pago-error" data-gt="${g.id}" style="color:var(--danger); font-size:12px; margin-top:8px; display:none;"></p>
+      </div>` : `
+      <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <b style="font-size:12.5px;">💳 Pago de la garantía</b>
+          <span class="badge ${g.pago_estatus==='pagada' ? 'badge-success' : 'badge-yellow'}">${g.pago_estatus==='pagada' ? 'Pagada' : 'Pendiente de pago'}</span>
+        </div>
+        <div style="font-size:12px; color:var(--text-muted); margin-top:8px;">
+          Enviada el ${g.pago_fecha_solicitud ? new Date(g.pago_fecha_solicitud).toLocaleString('es-MX') : '—'}${g.factura_numero ? ` · Factura ${esc(g.factura_numero)}` : ''}${(g.factura_monto !== null && g.factura_monto !== undefined) ? ` · ${fmtMoney(g.factura_monto)}` : ''}
+        </div>
+        <div style="display:flex; gap:10px; margin-top:8px; flex-wrap:wrap;">
+          <a href="${g.factura_url}" target="_blank" class="btn btn-ghost btn-sm">📄 Ver factura</a>
+          <a href="${g.comprobante_pago_url}" target="_blank" class="btn btn-ghost btn-sm">📄 Ver comprobante firmado</a>
+        </div>
+      </div>`);
     return `
     <div class="card" style="margin-bottom:12px;">
       <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
@@ -5225,6 +5314,7 @@ async function bindMisGarantiasTaller(taller){
       ${refaccionesBlock}
       ${finalizeBlock}
       ${finalPdfBtn}
+      ${pagoBlock}
     </div>`;
   }).join('');
 
@@ -5277,6 +5367,53 @@ async function bindMisGarantiasTaller(taller){
     btn.addEventListener('click', async ()=>{
       const g = await getGarantiaTaller(btn.dataset.gtPdf);
       if(g) buildGarantiaFinalizadaPDF(g);
+    });
+  });
+
+  container.querySelectorAll('[data-pago-submit]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const gtId = btn.dataset.pagoSubmit;
+      const errEl = container.querySelector(`.gt-pago-error[data-gt="${gtId}"]`);
+      const facturaInput = container.querySelector(`.gt-factura-file[data-gt="${gtId}"]`);
+      const comprobanteInput = container.querySelector(`.gt-comprobante-pago-file[data-gt="${gtId}"]`);
+      const numeroInput = container.querySelector(`.gt-factura-numero[data-gt="${gtId}"]`);
+      const montoInput = container.querySelector(`.gt-factura-monto[data-gt="${gtId}"]`);
+      errEl.style.display = 'none';
+      if(!facturaInput.files[0] || !comprobanteInput.files[0]){
+        errEl.textContent = 'Sube la factura y el comprobante de garantía finalizada firmado antes de continuar.';
+        errEl.style.display = 'block';
+        return;
+      }
+      btn.disabled = true; btn.textContent = 'Subiendo...';
+      try{
+        const [facturaUrl, comprobanteUrl] = await Promise.all([
+          uploadFile(facturaInput.files[0], `pagos-garantias/${taller.id}/${gtId}`),
+          uploadFile(comprobanteInput.files[0], `pagos-garantias/${taller.id}/${gtId}`),
+        ]);
+        const numero = numeroInput.value.trim();
+        const monto = montoInput.value !== '' ? Number(montoInput.value) : null;
+        await updateGarantiaTaller(gtId, {
+          factura_url: facturaUrl,
+          factura_numero: numero,
+          factura_monto: monto,
+          comprobante_pago_url: comprobanteUrl,
+          pago_estatus: 'pendiente',
+          pago_fecha_solicitud: new Date().toISOString(),
+        });
+        const g = items.find(x => x.id === gtId) || {};
+        const emailOk = await notifyPagoGarantiaSolicitado({
+          ...g, factura_numero: numero, factura_monto: monto,
+          factura_url: facturaUrl, comprobante_pago_url: comprobanteUrl,
+          taller_nombre: taller.nombre, taller_id: taller.id,
+        });
+        toast('Factura y comprobante enviados.' + (emailOk ? ' Se notificó a Postventa.' : ' ⚠ No se pudo notificar por correo (revisa la consola).'), emailOk ? 'ok' : 'err');
+        await bindMisGarantiasTaller(taller);
+      }catch(err){
+        console.error(err);
+        errEl.textContent = 'No se pudo enviar. Revisa tu conexión e intenta de nuevo.';
+        errEl.style.display = 'block';
+        btn.disabled = false; btn.textContent = 'Enviar para pago';
+      }
     });
   });
 }
@@ -6277,6 +6414,7 @@ function renderAdmin(){
       <button class="alert-tab ${!state.adminSection||state.adminSection==='clientes'?'active':''}" data-section="clientes">Clientes</button>
       <button class="alert-tab ${state.adminSection==='garantias'?'active':''}" data-section="garantias">Reporte de fallas</button>
       <button class="alert-tab ${state.adminSection==='garantias_taller'?'active':''}" data-section="garantias_taller">Garantías</button>
+      <button class="alert-tab ${state.adminSection==='pagos_garantias'?'active':''}" data-section="pagos_garantias">Pagos de garantías</button>
       <button class="alert-tab ${state.adminSection==='talleres'?'active':''}" data-section="talleres">Talleres</button>
       <button class="alert-tab ${state.adminSection==='distribuidores'?'active':''}" data-section="distribuidores">Distribuidores</button>
       <button class="alert-tab ${state.adminSection==='retail'?'active':''}" data-section="retail">Retail</button>
@@ -6503,6 +6641,300 @@ function renderGarantiasTallerAdminList(items){
       }
     });
   });
+}
+
+/* ---- Admin: Pagos de garantías (factura + comprobante subidos por el taller) ---- */
+function renderPagosGarantiasSection(){
+  return `
+  <div class="alert-section">
+    <p style="color:var(--text-muted); font-size:12.5px; margin:0 0 14px;">Facturas y comprobantes de garantía finalizada enviados por talleres — este es el único canal por el que se solicita el pago de una garantía.</p>
+    <div class="grid3" id="pago-garantia-stats" style="margin-bottom:20px;"></div>
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+      <div class="alert-tabs" id="pago-garantia-tabs">
+        <button class="alert-tab active" data-tab="all">Todas</button>
+        <button class="alert-tab" data-tab="pendiente">Pendientes de pago</button>
+        <button class="alert-tab" data-tab="pagada">Pagadas</button>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn btn-ghost btn-sm" id="pagos-garantias-send-report-btn">✉️ Enviar reporte ahora</button>
+        <button class="btn btn-ghost btn-sm" id="pagos-garantias-export-btn">📊 Descargar Excel</button>
+      </div>
+    </div>
+    <div id="admin-pagos-garantias-list"></div>
+  </div>
+  `;
+}
+
+async function loadPagosGarantiasAdmin(){
+  const items = await getAllPagosGarantias();
+  const container = document.getElementById('admin-pagos-garantias-list');
+  if(items === null){
+    container.innerHTML = `<div class="empty" style="color:var(--danger); padding:24px;">No se pudo conectar a la base de datos.</div>`;
+    window.__allPagosGarantias = [];
+    return;
+  }
+  window.__allPagosGarantias = items;
+  const pendientes = items.filter(g => g.pago_estatus !== 'pagada').length;
+  const pagadas = items.filter(g => g.pago_estatus === 'pagada').length;
+  const montoPendiente = items.filter(g => g.pago_estatus !== 'pagada').reduce((sum, g) => sum + (Number(g.factura_monto) || 0), 0);
+  document.getElementById('pago-garantia-stats').innerHTML = `
+    <div class="card"><div class="eyebrow">Total con factura enviada</div><div class="display" style="font-size:28px;">${items.length}</div></div>
+    <div class="card"><div class="eyebrow">Pendientes de pago</div><div class="display" style="font-size:28px; color:var(--danger);">${pendientes}</div><div style="font-size:11.5px; color:var(--text-faint); margin-top:4px;">${fmtMoney(montoPendiente)} sin pagar</div></div>
+    <div class="card"><div class="eyebrow">Pagadas</div><div class="display" style="font-size:28px; color:var(--success);">${pagadas}</div></div>
+  `;
+  renderPagosGarantiasAdminList(items);
+}
+
+function renderPagosGarantiasAdminList(items){
+  const tab = state.pagoGarantiaTab || 'all';
+  const filtered = items.filter(g => {
+    if(tab === 'all') return true;
+    if(tab === 'pagada') return g.pago_estatus === 'pagada';
+    return g.pago_estatus !== 'pagada'; // 'pendiente' agrupa cualquier valor que no sea 'pagada'
+  });
+  const container = document.getElementById('admin-pagos-garantias-list');
+  if(!container) return;
+  if(!filtered.length){
+    container.innerHTML = `<div class="empty" style="padding:24px;">Sin pagos en esta categoría.</div>`;
+    return;
+  }
+  container.innerHTML = filtered.map(g => {
+    const pagada = g.pago_estatus === 'pagada';
+    return `
+    <div class="card" style="margin-bottom:12px; ${!pagada ? 'border-left:3px solid var(--danger);' : ''}">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+        <div>
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <span class="id-pill">${g.id}</span>
+            <b style="font-size:13.5px;">${esc(g.cliente_nombre)}</b>
+            <span style="color:var(--text-faint); font-size:12px;">${esc(g.moto_modelo)}</span>
+          </div>
+          <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Taller: ${esc(g.taller_nombre)} (${esc(g.taller_id)})</div>
+          <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">
+            Enviada el ${g.pago_fecha_solicitud ? new Date(g.pago_fecha_solicitud).toLocaleString('es-MX') : '—'}
+            ${g.factura_numero ? ` · Factura ${esc(g.factura_numero)}` : ''}
+            ${(g.factura_monto !== null && g.factura_monto !== undefined) ? ` · <b style="color:var(--text);">${fmtMoney(g.factura_monto)}</b>` : ''}
+          </div>
+        </div>
+        <span class="badge ${pagada ? 'badge-success' : 'badge-danger'}">${pagada ? 'Pagada' : 'Pendiente de pago'}</span>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
+        <a href="${g.factura_url}" target="_blank" class="btn btn-ghost btn-sm">📄 Ver factura</a>
+        <a href="${g.comprobante_pago_url}" target="_blank" class="btn btn-ghost btn-sm">📄 Ver comprobante firmado</a>
+      </div>
+      <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
+        <div class="field" style="margin-bottom:10px;">
+          <label>Notas de pago (referencia, fecha de transferencia, etc.)</label>
+          <textarea class="pg-notas-input" data-gt="${g.id}" placeholder="Ej. Pagado por transferencia el 21/08, referencia 00123...">${esc(g.pago_notas || '')}</textarea>
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+          <button class="btn ${pagada ? 'btn-ghost' : 'btn-primary'} btn-sm" data-pg-toggle="${g.id}" data-nuevo-estatus="${pagada ? 'pendiente' : 'pagada'}">${pagada ? 'Marcar como pendiente' : '✓ Marcar como pagada'}</button>
+          <button class="btn btn-ghost btn-sm" data-pg-save-notas="${g.id}">Guardar notas</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  container.querySelectorAll('[data-pg-toggle]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.pgToggle;
+      const nuevoEstatus = btn.dataset.nuevoEstatus;
+      const notas = container.querySelector(`.pg-notas-input[data-gt="${id}"]`);
+      btn.disabled = true; btn.textContent = 'Guardando...';
+      try{
+        await updateGarantiaTaller(id, {
+          pago_estatus: nuevoEstatus,
+          pago_notas: notas ? notas.value.trim() : '',
+          pago_fecha_pagada: nuevoEstatus === 'pagada' ? new Date().toISOString() : null,
+        });
+        toast(nuevoEstatus === 'pagada' ? 'Marcada como pagada.' : 'Marcada como pendiente de pago.', 'ok');
+        await loadPagosGarantiasAdmin();
+      }catch(err){
+        console.error(err);
+        toast('No se pudo actualizar. Intenta de nuevo.', 'err');
+        btn.disabled = false;
+      }
+    });
+  });
+
+  container.querySelectorAll('[data-pg-save-notas]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.pgSaveNotas;
+      const notas = container.querySelector(`.pg-notas-input[data-gt="${id}"]`);
+      btn.disabled = true; btn.textContent = 'Guardando...';
+      try{
+        await updateGarantiaTaller(id, { pago_notas: notas.value.trim() });
+        toast('Notas guardadas.', 'ok');
+      }catch(err){
+        console.error(err);
+        toast('No se pudo guardar. Intenta de nuevo.', 'err');
+      }
+      btn.disabled = false; btn.textContent = 'Guardar notas';
+    });
+  });
+}
+
+// Fila "plana" de un pago de garantía, compartida entre el Excel descargable
+// y la tabla HTML del correo — para que ambos muestren siempre lo mismo.
+function pagoGarantiaRow(g){
+  return {
+    folio: g.id,
+    taller: `${g.taller_nombre || ''} (${g.taller_id || ''})`,
+    cliente: g.cliente_nombre || '',
+    moto: g.moto_modelo || '',
+    factura_numero: g.factura_numero || '',
+    monto: (g.factura_monto !== null && g.factura_monto !== undefined) ? Number(g.factura_monto) : null,
+    fecha_solicitud: g.pago_fecha_solicitud ? new Date(g.pago_fecha_solicitud) : null,
+    fecha_pagada: g.pago_fecha_pagada ? new Date(g.pago_fecha_pagada) : null,
+    pagada: g.pago_estatus === 'pagada',
+    notas: g.pago_notas || '',
+  };
+}
+
+// Descarga un .xlsx real con las facturas no pagadas resaltadas en rojo.
+// Usa ExcelJS (no SheetJS) porque es la única de las dos librerías cargadas
+// en la app que sí puede escribir color de relleno en las celdas.
+async function exportPagosGarantiasExcel(){
+  const btn = document.getElementById('pagos-garantias-export-btn');
+  const originalText = btn ? btn.textContent : '';
+  if(btn){ btn.disabled = true; btn.textContent = 'Generando...'; }
+  try{
+    const items = window.__allPagosGarantias || await getAllPagosGarantias() || [];
+    const rows = items.map(pagoGarantiaRow);
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Pagos de garantías');
+    ws.columns = [
+      { header: 'Folio', key: 'folio', width: 16 },
+      { header: 'Taller', key: 'taller', width: 28 },
+      { header: 'Cliente', key: 'cliente', width: 24 },
+      { header: 'Moto', key: 'moto', width: 16 },
+      { header: 'N° de factura', key: 'factura_numero', width: 16 },
+      { header: 'Monto', key: 'monto', width: 14 },
+      { header: 'Fecha de envío', key: 'fecha_solicitud', width: 18 },
+      { header: 'Estatus', key: 'estatus', width: 16 },
+      { header: 'Fecha de pago', key: 'fecha_pagada', width: 18 },
+      { header: 'Notas', key: 'notas', width: 30 },
+    ];
+    ws.getRow(1).font = { bold: true };
+    ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF17181F' } };
+    ws.getRow(1).font = { bold: true, color: { argb: 'FFFFC72C' } };
+    if(!rows.length){
+      ws.addRow({ folio: 'Aún no hay pagos de garantías registrados.' });
+    }else{
+      rows.forEach(r => {
+        const row = ws.addRow({
+          folio: r.folio,
+          taller: r.taller,
+          cliente: r.cliente,
+          moto: r.moto,
+          factura_numero: r.factura_numero,
+          monto: r.monto,
+          fecha_solicitud: r.fecha_solicitud ? r.fecha_solicitud.toLocaleString('es-MX') : '',
+          estatus: r.pagada ? 'Pagada' : 'Pendiente de pago',
+          fecha_pagada: r.fecha_pagada ? r.fecha_pagada.toLocaleString('es-MX') : '',
+          notas: r.notas,
+        });
+        row.getCell('monto').numFmt = '$#,##0.00';
+        if(!r.pagada){
+          // Mismo estilo que el "Bad" preestablecido de Excel: fondo rojo claro,
+          // texto rojo oscuro — para que salte a la vista de inmediato.
+          row.eachCell(cell => {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFC7CE' } };
+            cell.font = { color: { argb: 'FF9C0006' } };
+          });
+        }
+      });
+    }
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Letbe_Pagos_Garantias_${new Date().toISOString().slice(0,10)}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast('Reporte de pagos generado.', 'ok');
+  }catch(err){
+    console.error(err);
+    toast('No se pudo generar el reporte.', 'err');
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = originalText; }
+  }
+}
+
+// Arma la tabla HTML (con las filas no pagadas en rojo) que se inserta en el
+// correo del reporte semanal — vía la variable {{{tabla_html}}} de la
+// plantilla EMAILJS_TEMPLATE_ID_REPORTE_PAGOS (ver esa constante más arriba
+// para las instrucciones de configuración en el dashboard de EmailJS).
+function buildReportePagosHTMLTable(items){
+  const rows = items.map(pagoGarantiaRow);
+  if(!rows.length){
+    return '<p>No hay pagos de garantías registrados por ahora.</p>';
+  }
+  const trs = rows.map(r => {
+    const style = r.pagada
+      ? 'background:#e7f7ee; color:#0f5132;'
+      : 'background:#fdecea; color:#7a0c14; font-weight:bold;';
+    return `
+      <tr style="${style}">
+        <td style="padding:6px 10px; border:1px solid #ccc;">${esc(r.folio)}</td>
+        <td style="padding:6px 10px; border:1px solid #ccc;">${esc(r.taller)}</td>
+        <td style="padding:6px 10px; border:1px solid #ccc;">${esc(r.cliente)}</td>
+        <td style="padding:6px 10px; border:1px solid #ccc;">${esc(r.factura_numero || '—')}</td>
+        <td style="padding:6px 10px; border:1px solid #ccc; text-align:right;">${r.monto !== null ? fmtMoney(r.monto) : '—'}</td>
+        <td style="padding:6px 10px; border:1px solid #ccc;">${r.fecha_solicitud ? r.fecha_solicitud.toLocaleDateString('es-MX') : '—'}</td>
+        <td style="padding:6px 10px; border:1px solid #ccc;">${r.pagada ? 'Pagada' : 'PENDIENTE DE PAGO'}</td>
+      </tr>`;
+  }).join('');
+  const pendientesCount = rows.filter(r => !r.pagada).length;
+  return `
+    <p>${pendientesCount} factura${pendientesCount===1?'':'s'} pendiente${pendientesCount===1?'':'s'} de pago de ${rows.length} en total. Las filas en rojo son las que aún no se han pagado.</p>
+    <table style="border-collapse:collapse; font-family:Arial,sans-serif; font-size:13px; width:100%;">
+      <thead>
+        <tr style="background:#17181F; color:#FFC72C;">
+          <th style="padding:6px 10px; border:1px solid #ccc; text-align:left;">Folio</th>
+          <th style="padding:6px 10px; border:1px solid #ccc; text-align:left;">Taller</th>
+          <th style="padding:6px 10px; border:1px solid #ccc; text-align:left;">Cliente</th>
+          <th style="padding:6px 10px; border:1px solid #ccc; text-align:left;">N° de factura</th>
+          <th style="padding:6px 10px; border:1px solid #ccc; text-align:right;">Monto</th>
+          <th style="padding:6px 10px; border:1px solid #ccc; text-align:left;">Fecha de envío</th>
+          <th style="padding:6px 10px; border:1px solid #ccc; text-align:left;">Estatus</th>
+        </tr>
+      </thead>
+      <tbody>${trs}</tbody>
+    </table>`;
+}
+
+// Botón "Enviar reporte ahora" en Panel admin — dispara manualmente el mismo
+// correo que se programa semanalmente vía la función de Supabase (ver
+// supabase/functions/reporte-pagos-garantias/index.ts). Útil para probar la
+// plantilla de EmailJS o para forzar un envío fuera del horario programado.
+async function enviarReportePagosGarantiasAhora(){
+  const btn = document.getElementById('pagos-garantias-send-report-btn');
+  const originalText = btn ? btn.textContent : '';
+  if(!EMAILJS_TEMPLATE_ID_REPORTE_PAGOS){
+    toast('Falta configurar EMAILJS_TEMPLATE_ID_REPORTE_PAGOS en el código antes de poder enviar el reporte.', 'err');
+    return;
+  }
+  if(btn){ btn.disabled = true; btn.textContent = 'Enviando...'; }
+  try{
+    const items = window.__allPagosGarantias || await getAllPagosGarantias() || [];
+    const tablaHtml = buildReportePagosHTMLTable(items);
+    const ok = await sendEmailJS(EMAILJS_TEMPLATE_ID_REPORTE_PAGOS, {
+      tipo_evento: 'Reporte semanal de pagos de garantías',
+      tabla_html: tablaHtml,
+      fecha_evento: new Date().toLocaleString('es-MX'),
+    });
+    if(ok) logEmailSent('Reporte semanal de pagos de garantías (manual)');
+    toast(ok ? 'Reporte enviado por correo.' : '⚠ No se pudo enviar el reporte (revisa la consola).', ok ? 'ok' : 'err');
+  }catch(err){
+    console.error(err);
+    toast('No se pudo enviar el reporte.', 'err');
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = originalText; }
+  }
 }
 
 /* ---- Admin: Órdenes generadas por talleres ---- */
@@ -9371,6 +9803,19 @@ async function renderAdminSectionContent(){
         renderGarantiasTallerAdminList(window.__allGarantiasTaller || []);
       });
     });
+  }else if(state.adminSection === 'pagos_garantias'){
+    content.innerHTML = renderPagosGarantiasSection();
+    state.pagoGarantiaTab = state.pagoGarantiaTab || 'all';
+    await loadPagosGarantiasAdmin();
+    document.querySelectorAll('#pago-garantia-tabs .alert-tab').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        state.pagoGarantiaTab = btn.dataset.tab;
+        document.querySelectorAll('#pago-garantia-tabs .alert-tab').forEach(b => b.classList.toggle('active', b===btn));
+        renderPagosGarantiasAdminList(window.__allPagosGarantias || []);
+      });
+    });
+    document.getElementById('pagos-garantias-export-btn').addEventListener('click', exportPagosGarantiasExcel);
+    document.getElementById('pagos-garantias-send-report-btn').addEventListener('click', enviarReportePagosGarantiasAhora);
   }else if(state.adminSection === 'ordenes'){
     content.innerHTML = renderOrdenesAdminSection();
     state.ordenTipoTab = state.ordenTipoTab || 'all';
