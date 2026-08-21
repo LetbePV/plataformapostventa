@@ -1946,6 +1946,19 @@ async function updateStaffContabilidadActivo(usuario, activo){
     body: JSON.stringify({ activo }),
   });
 }
+// Edición general (nombre y/o contraseña) de una cuenta de Contabilidad ya
+// existente — usada tanto por "Editar" (cambia nombre) como por "Restablecer
+// contraseña" (genera y guarda una nueva) en la tabla de accesos de
+// Contabilidad, sin importar si esa tabla se ve desde el Panel admin general
+// o desde el panel exclusivo de Contabilidad (mismo componente en ambos).
+async function updateStaffContabilidad(usuario, fields){
+  const rows = await sbRequest('staff_contabilidad?usuario=eq.' + encodeURIComponent(usuario), {
+    method:'PATCH',
+    headers:{'Prefer':'return=representation'},
+    body: JSON.stringify(fields),
+  });
+  return (rows && rows[0]) || null;
+}
 
 /* ---- Órdenes de taller (servicio / diagnóstico / garantía) ---- */
 const CHECKLIST_ITEMS = [
@@ -6660,9 +6673,14 @@ function renderContabilidadStaffPanel(){
   <div class="alert-tabs" id="contabilidad-section-tabs" style="margin-bottom:20px;">
     <button class="alert-tab ${sub==='garantias'?'active':''}" data-sub="garantias">Pagos de garantías</button>
     <button class="alert-tab ${sub==='activaciones'?'active':''}" data-sub="activaciones">Pagos de activaciones</button>
+    <button class="alert-tab ${sub==='reportes'?'active':''}" data-sub="reportes">Reportes</button>
+    <button class="alert-tab ${sub==='personal'?'active':''}" data-sub="personal">Personal</button>
   </div>
   <div id="contabilidad-content">
-    ${sub === 'activaciones' ? renderPagosActivacionesSection({ showAccessManagement: false }) : renderPagosGarantiasSection()}
+    ${sub === 'activaciones' ? renderPagosActivacionesSection({ showAccessManagement: false })
+      : sub === 'reportes' ? renderReportesContabilidadSection()
+      : sub === 'personal' ? `<div class="alert-section">${renderStaffContabilidadManagementBlock()}</div>`
+      : renderPagosGarantiasSection()}
   </div>
   `;
 }
@@ -6683,6 +6701,12 @@ async function bindContabilidadStaffPanel(){
   if(sub === 'activaciones'){
     await loadPagosActivacionesAdmin();
     bindPagosActivacionesSection();
+  }else if(sub === 'reportes'){
+    await loadReportesContabilidadAdmin();
+    bindReportesContabilidadSection();
+  }else if(sub === 'personal'){
+    await loadStaffContabilidadAdmin();
+    document.getElementById('staff-contabilidad-add-btn').addEventListener('click', openAddStaffContabilidadModal);
   }else{
     await loadPagosGarantiasAdmin();
     bindPagosGarantiasSection();
@@ -7302,13 +7326,69 @@ async function enviarReportePagosGarantiasAhora(btnId){
   }
 }
 
+// Pestaña "Reportes" del panel de Contabilidad: la misma tabla combinada
+// (garantías + activaciones, con Tipo y Estatus) que hoy solo se manda por
+// correo, pero visible en pantalla en cualquier momento sin esperar al
+// correo semanal ni tener que pedirle a alguien que reenvíe el reporte.
+function renderReportesContabilidadSection(){
+  return `
+  <div class="alert-section">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:16px;">
+      <p style="color:var(--text-muted); font-size:12.5px; margin:0; max-width:640px;">Tabla combinada de facturas de Garantías y de Cobro de activaciones, con su estatus de pago. Es la misma información que se manda cada lunes por correo, aquí siempre actualizada al momento.</p>
+      <button class="btn btn-ghost btn-sm" id="contabilidad-reportes-send-report-btn" title="Manda por correo la misma tabla que ves aquí abajo.">✉️ Enviar reporte ahora</button>
+    </div>
+    <div class="grid3" id="contabilidad-reportes-stats" style="margin-bottom:20px;"></div>
+    <div class="card" id="contabilidad-reportes-table" style="overflow-x:auto;"></div>
+  </div>
+  `;
+}
+
+async function loadReportesContabilidadAdmin(){
+  const statsEl = document.getElementById('contabilidad-reportes-stats');
+  const tableEl = document.getElementById('contabilidad-reportes-table');
+  if(!tableEl) return;
+  const [garantiasRaw, activacionesRaw] = await Promise.all([
+    window.__allPagosGarantias ? Promise.resolve(window.__allPagosGarantias) : getAllPagosGarantias(),
+    window.__allCobrosActivaciones ? Promise.resolve(window.__allCobrosActivaciones) : getAllCobrosActivaciones(),
+  ]);
+  if(garantiasRaw === null || activacionesRaw === null){
+    tableEl.innerHTML = `<div class="empty" style="color:var(--danger); padding:24px;">No se pudo conectar a la base de datos.</div>`;
+    if(statsEl) statsEl.innerHTML = '';
+    return;
+  }
+  window.__allPagosGarantias = garantiasRaw;
+  window.__allCobrosActivaciones = activacionesRaw;
+  const totalGarantias = garantiasRaw.length;
+  const totalActivaciones = activacionesRaw.length;
+  const pendientesGarantias = garantiasRaw.filter(g => g.pago_estatus !== 'pagada').length;
+  const pendientesActivaciones = activacionesRaw.filter(a => a.pago_estatus !== 'pagada').length;
+  if(statsEl){
+    statsEl.innerHTML = `
+      <div class="card"><div class="eyebrow">Garantías</div><div class="display" style="font-size:28px;">${totalGarantias}</div><div style="font-size:11.5px; color:var(--text-faint); margin-top:4px;">${pendientesGarantias} pendiente${pendientesGarantias===1?'':'s'} de pago</div></div>
+      <div class="card"><div class="eyebrow">Activaciones</div><div class="display" style="font-size:28px;">${totalActivaciones}</div><div style="font-size:11.5px; color:var(--text-faint); margin-top:4px;">${pendientesActivaciones} pendiente${pendientesActivaciones===1?'':'s'} de pago</div></div>
+      <div class="card"><div class="eyebrow">Total combinado</div><div class="display" style="font-size:28px; color:var(--danger);">${pendientesGarantias + pendientesActivaciones}</div><div style="font-size:11.5px; color:var(--text-faint); margin-top:4px;">pendientes de pago en total</div></div>
+    `;
+  }
+  tableEl.innerHTML = buildReporteCombinadoHTMLTable(garantiasRaw, activacionesRaw);
+}
+
+function bindReportesContabilidadSection(){
+  const btn = document.getElementById('contabilidad-reportes-send-report-btn');
+  if(btn) btn.addEventListener('click', ()=> enviarReportePagosGarantiasAhora('contabilidad-reportes-send-report-btn'));
+}
+
 /* ---- Admin: Pagos de activaciones (factura + fotos subidas por el taller
    para cobrar una activación) — mismo patrón que Pagos de garantías, en una
    tabla separada porque el modelo de datos es distinto (sin cliente/moto ya
    registrados, sin comprobante firmado, con dos fotos en vez de una). ---- */
-function renderPagosActivacionesSection(opts){
-  opts = opts || {};
-  const accessManagementBlock = opts.showAccessManagement ? `
+// Tabla de accesos (alta/baja/edición) del equipo de Contabilidad. Es un
+// componente independiente para poder mostrarlo tanto embebido en "Pagos de
+// activaciones" del Panel admin general (showAccessManagement:true) como en
+// su propia pestaña "Personal" dentro del panel exclusivo de Contabilidad —
+// cualquier usuario de Contabilidad puede dar de alta, baja o modificar a
+// sus compañeros desde ahí, sin depender del Panel admin general.
+function renderStaffContabilidadManagementBlock(){
+  return `
     <div style="margin-bottom:28px; padding-bottom:24px; border-bottom:1px solid var(--border);">
       <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
         <div>
@@ -7324,7 +7404,12 @@ function renderPagosActivacionesSection(opts){
         </div>
       </div>
     </div>
-  ` : '';
+  `;
+}
+
+function renderPagosActivacionesSection(opts){
+  opts = opts || {};
+  const accessManagementBlock = opts.showAccessManagement ? renderStaffContabilidadManagementBlock() : '';
   return `
   <div class="alert-section">
     ${accessManagementBlock}
@@ -7559,7 +7644,11 @@ function loadStaffContabilidadAdmin(){
         <td>${esc(s.nombre || '—')}</td>
         <td class="mono">${esc(s.password)}</td>
         <td><span class="badge ${s.activo ? 'badge-success' : 'badge-danger'}">${s.activo ? 'Activo' : 'Dado de baja'}</span></td>
-        <td><button class="btn btn-ghost btn-sm" data-toggle-staff-contabilidad="${esc(s.usuario)}" data-activo="${s.activo}">${s.activo ? 'Dar de baja' : 'Reactivar'}</button></td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-ghost btn-sm" data-edit-staff-contabilidad="${esc(s.usuario)}">Editar</button>
+          <button class="btn btn-ghost btn-sm" data-reset-staff-contabilidad="${esc(s.usuario)}">Restablecer contraseña</button>
+          <button class="btn btn-ghost btn-sm" data-toggle-staff-contabilidad="${esc(s.usuario)}" data-activo="${s.activo}">${s.activo ? 'Dar de baja' : 'Reactivar'}</button>
+        </td>
       </tr>
     `).join('') : `<tr><td colspan="5"><div class="empty">Aún no hay usuarios de Contabilidad registrados.</div></td></tr>`;
 
@@ -7579,7 +7668,71 @@ function loadStaffContabilidadAdmin(){
         }
       });
     });
+
+    tbody.querySelectorAll('[data-edit-staff-contabilidad]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const usuario = btn.dataset.editStaffContabilidad;
+        const staff = (window.__allStaffContabilidad || []).find(s => s.usuario === usuario);
+        if(staff) openEditStaffContabilidadModal(staff);
+      });
+    });
+
+    tbody.querySelectorAll('[data-reset-staff-contabilidad]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const usuario = btn.dataset.resetStaffContabilidad;
+        btn.disabled = true;
+        try{
+          const nuevaPassword = genTallerPassword();
+          const staff = await updateStaffContabilidad(usuario, { password: nuevaPassword });
+          await loadStaffContabilidadAdmin();
+          showStaffContabilidadCredentialsModal(staff || { usuario, password: nuevaPassword });
+        }catch(err){
+          console.error(err);
+          toast('No se pudo restablecer la contraseña.', 'err');
+          btn.disabled = false;
+        }
+      });
+    });
   })();
+}
+
+function openEditStaffContabilidadModal(staff){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="eyebrow">Contabilidad</div>
+      <h2 style="font-family:'Archivo Black'; font-size:20px; margin:0 0 16px;">Editar ${esc(staff.usuario)}</h2>
+      <form id="staff-contabilidad-edit-form">
+        <div class="field"><label>Nombre del colaborador</label><input required name="nombre" value="${esc(staff.nombre || '')}" placeholder="Ej. María García"></div>
+        <div style="display:flex; gap:10px; margin-top:6px;">
+          <button type="button" class="btn btn-ghost" id="cancel-staff-contabilidad-edit" style="flex:1;">Cancelar</button>
+          <button type="submit" class="btn btn-primary" style="flex:1;">Guardar cambios</button>
+        </div>
+        <p id="staff-contabilidad-edit-form-error" style="color:var(--danger); font-size:12.5px; margin-top:10px; display:none;"></p>
+      </form>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#cancel-staff-contabilidad-edit').addEventListener('click', ()=> overlay.remove());
+  overlay.querySelector('#staff-contabilidad-edit-form').addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const f = e.target;
+    const btn = f.querySelector('button[type=submit]');
+    const errEl = document.getElementById('staff-contabilidad-edit-form-error');
+    errEl.style.display = 'none';
+    btn.disabled = true; btn.textContent = 'Guardando...';
+    try{
+      await updateStaffContabilidad(staff.usuario, { nombre: f.nombre.value.trim() });
+      overlay.remove();
+      toast('Usuario actualizado.', 'ok');
+      await loadStaffContabilidadAdmin();
+    }catch(err){
+      console.error(err);
+      errEl.textContent = 'No se pudo guardar el cambio.';
+      errEl.style.display = 'block';
+      btn.disabled = false; btn.textContent = 'Guardar cambios';
+    }
+  });
 }
 
 function openAddStaffContabilidadModal(){
