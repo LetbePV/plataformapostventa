@@ -7411,6 +7411,27 @@ function renderValidacionPagosRefaccionesList(items){
       <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
         <button class="btn ${validado ? 'btn-ghost' : 'btn-primary'} btn-sm" data-valida-pedido="${esc(p.id)}" data-nuevo="${validado ? '0' : '1'}">${validado ? 'Quitar validación' : '✓ Validar pago y autorizar venta'}</button>
       </div>
+      <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
+        <div class="eyebrow" style="font-size:10px; margin-bottom:8px;">Factura</div>
+        ${p.factura_url
+          ? `<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+               <a href="${p.factura_url}" target="_blank" class="btn btn-ghost btn-sm">📄 Ver factura${p.factura_numero ? ` (${esc(p.factura_numero)})` : ''}</a>
+               <span style="color:var(--text-faint); font-size:11.5px;">${p.factura_fecha_subida ? `· subida el ${new Date(p.factura_fecha_subida).toLocaleString('es-MX')}` : ''}</span>
+             </div>
+             <div style="margin-top:10px;">
+               <button class="btn btn-ghost btn-sm factura-replace-btn" data-pedido="${esc(p.id)}">Reemplazar factura</button>
+             </div>
+             <div class="factura-upload-form" data-pedido="${esc(p.id)}" style="display:none; margin-top:10px; gap:8px; flex-wrap:wrap; align-items:flex-end;">
+               <div class="field" style="flex:1; min-width:160px;"><label>N° de factura (opcional)</label><input type="text" class="factura-numero-input" data-pedido="${esc(p.id)}" placeholder="Ej. F-000123" value="${esc(p.factura_numero || '')}"></div>
+               <div class="field" style="flex:1; min-width:200px;"><label>Archivo (PDF o imagen)</label><input type="file" accept="application/pdf,image/*" class="factura-file-input" data-pedido="${esc(p.id)}"></div>
+               <button class="btn btn-primary btn-sm factura-upload-btn" data-pedido="${esc(p.id)}">Subir factura</button>
+             </div>`
+          : `<div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
+               <div class="field" style="flex:1; min-width:160px;"><label>N° de factura (opcional)</label><input type="text" class="factura-numero-input" data-pedido="${esc(p.id)}" placeholder="Ej. F-000123"></div>
+               <div class="field" style="flex:1; min-width:200px;"><label>Archivo (PDF o imagen)</label><input type="file" accept="application/pdf,image/*" class="factura-file-input" data-pedido="${esc(p.id)}"></div>
+               <button class="btn btn-primary btn-sm factura-upload-btn" data-pedido="${esc(p.id)}">📄 Subir factura</button>
+             </div>`}
+      </div>
     </div>`;
   }).join('');
 
@@ -7432,6 +7453,43 @@ function renderValidacionPagosRefaccionesList(items){
         console.error(err);
         toast('No se pudo actualizar. Intenta de nuevo.', 'err');
         btn.disabled = false;
+      }
+    });
+  });
+
+  container.querySelectorAll('.factura-replace-btn').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const id = btn.dataset.pedido;
+      const form = container.querySelector(`.factura-upload-form[data-pedido="${CSS.escape(id)}"]`);
+      if(form) form.style.display = 'flex';
+    });
+  });
+
+  container.querySelectorAll('.factura-upload-btn').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.pedido;
+      const fileInput = container.querySelector(`.factura-file-input[data-pedido="${CSS.escape(id)}"]`);
+      const numeroInput = container.querySelector(`.factura-numero-input[data-pedido="${CSS.escape(id)}"]`);
+      const file = fileInput && fileInput.files[0];
+      if(!file){
+        toast('Selecciona el archivo de la factura antes de subirla.', 'err');
+        return;
+      }
+      const originalText = btn.textContent;
+      btn.disabled = true; btn.textContent = 'Subiendo...';
+      try{
+        const facturaUrl = await uploadFile(file, `pedidos/facturas/${id}`);
+        await updateSolicitudCompra(id, {
+          factura_url: facturaUrl,
+          factura_numero: (numeroInput && numeroInput.value.trim()) || null,
+          factura_fecha_subida: new Date().toISOString(),
+        });
+        toast('Factura subida correctamente.', 'ok');
+        await loadValidacionPagosRefacciones();
+      }catch(err){
+        console.error(err);
+        toast('No se pudo subir la factura. Intenta de nuevo.', 'err');
+        btn.disabled = false; btn.textContent = originalText;
       }
     });
   });
@@ -8992,6 +9050,9 @@ async function exportPedidosExcel(){
       'Pago validado': p.pago_validado ? 'Sí' : 'No',
       'Validado por': p.pago_validado_por || '',
       'Fecha de validación': (p.pago_validado_fecha || '').slice(0,10),
+      'Factura subida': p.factura_url ? 'Sí' : 'No',
+      'N° de factura': p.factura_numero || '',
+      'Fecha de factura': (p.factura_fecha_subida || '').slice(0,10),
       'Fecha de solicitud': (p.created_at || '').slice(0,10),
       'Última actualización': (p.updated_at || '').slice(0,10),
     }));
@@ -9060,6 +9121,12 @@ function renderPedidosAdminList(items){
                : `<span class="badge badge-pending">Pendiente de validar por Contabilidad</span>`}
            </div>`
         : `<div style="margin-top:10px; color:var(--text-faint); font-size:12px;">Aún no sube comprobante de transferencia.</div>`}
+      ${p.factura_url
+        ? `<div style="margin-top:8px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+             <a href="${p.factura_url}" target="_blank" class="btn btn-ghost btn-sm">📄 Ver factura${p.factura_numero ? ` (${esc(p.factura_numero)})` : ''}</a>
+             <span style="color:var(--text-faint); font-size:11.5px;">${p.factura_fecha_subida ? `· subida el ${new Date(p.factura_fecha_subida).toLocaleString('es-MX')}` : ''}</span>
+           </div>`
+        : ''}
       <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
         <div class="field" style="margin-bottom:10px;">
           <label>Notas internas de seguimiento</label>
@@ -11097,6 +11164,9 @@ async function exportExcelReport(){
       'Pago validado': p.pago_validado ? 'Sí' : 'No',
       'Validado por': p.pago_validado_por || '',
       'Fecha de validación': (p.pago_validado_fecha || '').slice(0,10),
+      'Factura subida': p.factura_url ? 'Sí' : 'No',
+      'N° de factura': p.factura_numero || '',
+      'Fecha de factura': (p.factura_fecha_subida || '').slice(0,10),
       'Fecha de solicitud': (p.created_at || '').slice(0,10),
       'Última actualización': (p.updated_at || '').slice(0,10),
     }));
