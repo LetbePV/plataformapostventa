@@ -6853,11 +6853,13 @@ function renderContabilidadStaffPanel(){
   <div class="alert-tabs" id="contabilidad-section-tabs" style="margin-bottom:20px;">
     <button class="alert-tab ${sub==='garantias'?'active':''}" data-sub="garantias">Pagos de garantías</button>
     <button class="alert-tab ${sub==='activaciones'?'active':''}" data-sub="activaciones">Pagos de activaciones</button>
+    <button class="alert-tab ${sub==='pedidos'?'active':''}" data-sub="pedidos">Validar pagos de Refacciones</button>
     <button class="alert-tab ${sub==='reportes'?'active':''}" data-sub="reportes">Reportes</button>
     <button class="alert-tab ${sub==='personal'?'active':''}" data-sub="personal">Personal</button>
   </div>
   <div id="contabilidad-content">
     ${sub === 'activaciones' ? renderPagosActivacionesSection({ showAccessManagement: false })
+      : sub === 'pedidos' ? renderValidacionPagosRefaccionesSection()
       : sub === 'reportes' ? renderReportesContabilidadSection()
       : sub === 'personal' ? `<div class="alert-section">${renderStaffContabilidadManagementBlock()}</div>`
       : renderPagosGarantiasSection()}
@@ -6881,6 +6883,9 @@ async function bindContabilidadStaffPanel(){
   if(sub === 'activaciones'){
     await loadPagosActivacionesAdmin();
     bindPagosActivacionesSection();
+  }else if(sub === 'pedidos'){
+    await loadValidacionPagosRefacciones();
+    bindValidacionPagosRefaccionesSection();
   }else if(sub === 'reportes'){
     await loadReportesContabilidadAdmin();
     bindReportesContabilidadSection();
@@ -7324,6 +7329,120 @@ function renderPagosGarantiasAdminList(items){
         toast('No se pudo guardar. Intenta de nuevo.', 'err');
       }
       btn.disabled = false; btn.textContent = 'Guardar notas';
+    });
+  });
+}
+
+/* ---- Pestaña "Validar pagos de Refacciones" del panel de Contabilidad:
+   pedidos del cotizador de Refacciones (solicitudes_compra) donde el
+   cliente ya subió su comprobante de transferencia. Contabilidad revisa el
+   depósito y, si es correcto, valida el pago — esto es lo que autoriza al
+   equipo de Refacciones a proceder con la venta (el badge "Pago validado"
+   aparece en la tarjeta del pedido tanto en este panel como en el Panel
+   admin general y en el panel de staff de Refacciones, ver
+   renderPedidosAdminList). No dispara ningún correo por ahora — es solo un
+   registro visible dentro de la app de quién validó y cuándo. ---- */
+function renderValidacionPagosRefaccionesSection(){
+  return `
+  <div class="alert-section">
+    <p style="color:var(--text-muted); font-size:12.5px; margin:0 0 14px;">Pedidos de Refacciones donde el cliente o taller ya subió su comprobante de transferencia. Revisa el depósito y valida el pago para autorizar al equipo de Refacciones a proceder con la venta.</p>
+    <div class="grid3" id="valida-pedido-stats" style="margin-bottom:20px;"></div>
+    <div class="alert-tabs" id="valida-pedido-tabs">
+      <button class="alert-tab ${(state.validaPedidoTab||'pendiente')==='pendiente'?'active':''}" data-tab="pendiente">Pendientes de validar</button>
+      <button class="alert-tab ${state.validaPedidoTab==='validado'?'active':''}" data-tab="validado">Validados</button>
+    </div>
+    <div id="valida-pedido-list"></div>
+  </div>
+  `;
+}
+
+async function loadValidacionPagosRefacciones(){
+  const items = await getAllSolicitudesCompra();
+  const container = document.getElementById('valida-pedido-list');
+  if(items === null){
+    if(container) container.innerHTML = `<div class="empty" style="color:var(--danger); padding:24px;">No se pudo conectar a la base de datos.</div>`;
+    window.__allPedidosConComprobante = [];
+    return;
+  }
+  const conComprobante = items.filter(p => p.comprobante_transferencia_url);
+  window.__allPedidosConComprobante = conComprobante;
+  const pendientes = conComprobante.filter(p => !p.pago_validado).length;
+  const validados = conComprobante.filter(p => p.pago_validado).length;
+  const statsEl = document.getElementById('valida-pedido-stats');
+  if(statsEl) statsEl.innerHTML = `
+    <div class="card"><div class="eyebrow">Con comprobante subido</div><div class="display" style="font-size:28px;">${conComprobante.length}</div></div>
+    <div class="card"><div class="eyebrow">Pendientes de validar</div><div class="display" style="font-size:28px; color:var(--danger);">${pendientes}</div></div>
+    <div class="card"><div class="eyebrow">Validados</div><div class="display" style="font-size:28px; color:var(--success);">${validados}</div></div>
+  `;
+  renderValidacionPagosRefaccionesList(conComprobante);
+}
+
+function renderValidacionPagosRefaccionesList(items){
+  const tab = state.validaPedidoTab || 'pendiente';
+  const filtered = items.filter(p => tab === 'validado' ? !!p.pago_validado : !p.pago_validado);
+  const container = document.getElementById('valida-pedido-list');
+  if(!container) return;
+  if(!filtered.length){
+    container.innerHTML = `<div class="empty" style="padding:24px;">Sin pedidos en esta categoría.</div>`;
+    return;
+  }
+  container.innerHTML = filtered.map(p => {
+    const validado = !!p.pago_validado;
+    return `
+    <div class="card" style="margin-bottom:12px; ${!validado ? 'border-left:3px solid var(--danger);' : ''}">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+        <div>
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <span class="id-pill">${esc(p.id)}</span>
+            <b style="font-size:13.5px;">${esc(p.nombre)}</b>
+            ${p.taller_id ? `<span class="badge badge-yellow">Taller: ${esc(p.taller_nombre)} (${esc(p.taller_id)})</span>` : ''}
+          </div>
+          <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">${esc(p.telefono || '')}${p.correo ? ` · ${esc(p.correo)}` : ''}</div>
+        </div>
+        <span class="badge ${validado ? 'badge-success' : 'badge-pending'}">${validado ? '✓ Pago validado' : 'Pendiente de validar'}</span>
+      </div>
+      <div style="margin-top:10px; font-size:12.5px;"><b>Total estimado:</b> ${fmtMoney(p.total_estimado)}</div>
+      ${p.direccion_envio ? `<div style="margin-top:6px; color:var(--text-muted); font-size:12.5px;"><b>Dirección de envío:</b> ${esc(p.direccion_envio)}${p.referencia ? ` · <b>Referencia:</b> ${esc(p.referencia)}` : ''}</div>` : ''}
+      <div style="margin-top:10px;">
+        <a href="${p.comprobante_transferencia_url}" target="_blank" class="btn btn-ghost btn-sm">🧾 Ver comprobante de transferencia</a>
+        <span style="color:var(--text-faint); font-size:11.5px;">${p.comprobante_fecha_envio ? `· enviado el ${new Date(p.comprobante_fecha_envio).toLocaleString('es-MX')}` : ''}</span>
+      </div>
+      ${validado ? `<div style="margin-top:10px; font-size:12px; color:var(--text-muted);">Validado por <b>${esc(p.pago_validado_por || '—')}</b> el ${p.pago_validado_fecha ? new Date(p.pago_validado_fecha).toLocaleString('es-MX') : '—'}</div>` : ''}
+      <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
+        <button class="btn ${validado ? 'btn-ghost' : 'btn-primary'} btn-sm" data-valida-pedido="${esc(p.id)}" data-nuevo="${validado ? '0' : '1'}">${validado ? 'Quitar validación' : '✓ Validar pago y autorizar venta'}</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  container.querySelectorAll('[data-valida-pedido]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.validaPedido;
+      const nuevo = btn.dataset.nuevo === '1';
+      const staff = state.contabilidadAuthed;
+      btn.disabled = true; btn.textContent = 'Guardando...';
+      try{
+        await updateSolicitudCompra(id, {
+          pago_validado: nuevo,
+          pago_validado_por: nuevo ? (staff && (staff.nombre || staff.usuario) || '') : null,
+          pago_validado_fecha: nuevo ? new Date().toISOString() : null,
+        });
+        toast(nuevo ? 'Pago validado. Venta autorizada para Refacciones.' : 'Se quitó la validación del pago.', 'ok');
+        await loadValidacionPagosRefacciones();
+      }catch(err){
+        console.error(err);
+        toast('No se pudo actualizar. Intenta de nuevo.', 'err');
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
+function bindValidacionPagosRefaccionesSection(){
+  document.querySelectorAll('#valida-pedido-tabs .alert-tab').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      state.validaPedidoTab = btn.dataset.tab;
+      document.querySelectorAll('#valida-pedido-tabs .alert-tab').forEach(b => b.classList.toggle('active', b===btn));
+      renderValidacionPagosRefaccionesList(window.__allPedidosConComprobante || []);
     });
   });
 }
@@ -8870,6 +8989,9 @@ async function exportPedidosExcel(){
       'Notas internas': p.admin_notes || '',
       'Comprobante de transferencia': p.comprobante_transferencia_url || '',
       'Fecha de envío del comprobante': (p.comprobante_fecha_envio || '').slice(0,10),
+      'Pago validado': p.pago_validado ? 'Sí' : 'No',
+      'Validado por': p.pago_validado_por || '',
+      'Fecha de validación': (p.pago_validado_fecha || '').slice(0,10),
       'Fecha de solicitud': (p.created_at || '').slice(0,10),
       'Última actualización': (p.updated_at || '').slice(0,10),
     }));
@@ -8930,7 +9052,13 @@ function renderPedidosAdminList(items){
       ${p.direccion_envio ? `<div style="margin-top:10px; color:var(--text-muted); font-size:12.5px;"><b>Dirección de envío:</b> ${esc(p.direccion_envio)}${p.referencia ? ` · <b>Referencia:</b> ${esc(p.referencia)}` : ''}</div>` : ''}
       ${p.notas ? `<div style="margin-top:6px; color:var(--text-muted); font-size:12.5px;"><b>Notas del cliente:</b> ${esc(p.notas)}</div>` : ''}
       ${p.comprobante_transferencia_url
-        ? `<div style="margin-top:10px;"><a href="${p.comprobante_transferencia_url}" target="_blank" class="btn btn-ghost btn-sm">🧾 Ver comprobante de transferencia</a> <span style="color:var(--text-faint); font-size:11.5px;">${p.comprobante_fecha_envio ? `· enviado el ${new Date(p.comprobante_fecha_envio).toLocaleString('es-MX')}` : ''}</span></div>`
+        ? `<div style="margin-top:10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+             <a href="${p.comprobante_transferencia_url}" target="_blank" class="btn btn-ghost btn-sm">🧾 Ver comprobante de transferencia</a>
+             <span style="color:var(--text-faint); font-size:11.5px;">${p.comprobante_fecha_envio ? `· enviado el ${new Date(p.comprobante_fecha_envio).toLocaleString('es-MX')}` : ''}</span>
+             ${p.pago_validado
+               ? `<span class="badge badge-success">✓ Pago validado${p.pago_validado_por ? ' · ' + esc(p.pago_validado_por) : ''}</span>`
+               : `<span class="badge badge-pending">Pendiente de validar por Contabilidad</span>`}
+           </div>`
         : `<div style="margin-top:10px; color:var(--text-faint); font-size:12px;">Aún no sube comprobante de transferencia.</div>`}
       <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
         <div class="field" style="margin-bottom:10px;">
@@ -10966,6 +11094,9 @@ async function exportExcelReport(){
       'Notas internas': p.admin_notes || '',
       'Comprobante de transferencia': p.comprobante_transferencia_url || '',
       'Fecha de envío del comprobante': (p.comprobante_fecha_envio || '').slice(0,10),
+      'Pago validado': p.pago_validado ? 'Sí' : 'No',
+      'Validado por': p.pago_validado_por || '',
+      'Fecha de validación': (p.pago_validado_fecha || '').slice(0,10),
       'Fecha de solicitud': (p.created_at || '').slice(0,10),
       'Última actualización': (p.updated_at || '').slice(0,10),
     }));
