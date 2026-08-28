@@ -293,6 +293,19 @@
     .help-modal{height:94vh; border-radius:12px;}
   }
 
+  /* ---------- Acceso de staff (discreto) ----------
+     Deliberadamente NO usa el estilo de los demás botones (sin píldora,
+     sin sombra, sin texto). Es solo un punto tenue en la esquina inferior
+     izquierda; casi invisible hasta que el cursor pasa encima. */
+  .staff-fab{
+    position:fixed; bottom:14px; left:14px; z-index:90;
+    width:10px; height:10px; border-radius:50%;
+    background:var(--text-faint); border:none; padding:0;
+    opacity:0.22; cursor:pointer; transition:opacity .15s ease;
+  }
+  .staff-fab:hover{opacity:0.6;}
+  .staff-fab:focus-visible{opacity:0.8; outline:1px solid var(--text-faint); outline-offset:3px;}
+
   /* ---------- Hero / lookup ---------- */
   .hero{
     display:grid; grid-template-columns:1.1fr 0.9fr; gap:28px; align-items:stretch; margin-bottom:40px;
@@ -464,7 +477,6 @@
       <button data-view="consulta">Bitácora digital</button>
       <button data-view="cotizador">Refacciones</button>
       <button data-view="socios" class="nav-secondary">Socios comerciales</button>
-      <button data-view="admin" class="nav-secondary">Panel admin</button>
     </nav>
   </div>
 </header>
@@ -478,6 +490,14 @@
   <span class="help-fab-icon">?</span><span>Ayuda</span>
 </button>
 <div id="help-modal-wrap"></div>
+<!-- Acceso de staff, discreto a propósito: no es un botón de navegación
+     normal ni lleva texto/ícono que lo identifique como "Panel admin" o
+     "staff" — es un punto casi invisible en la esquina inferior izquierda,
+     visible en toda la app (incluida la versión incrustada en el sitio
+     público) para que el equipo interno pueda llegar al login sin que un
+     visitante casual note que existe. El acceso real sigue protegido por su
+     propio usuario/contraseña; esto solo evita exhibirlo. -->
+<button type="button" id="staff-fab" class="staff-fab" aria-label="Acceso interno"></button>
 
 <script>
 /* =========================================================
@@ -705,6 +725,19 @@ const EMAILJS_TEMPLATE_ID_PAGO_GARANTIA = 'template_ikeplos';
 // envío semanal automático (ver supabase/functions/reporte-pagos-garantias).
 const EMAILJS_TEMPLATE_ID_REPORTE_PAGOS = 'template_yjhj2nl';
 
+// Plantilla para avisar a Cuentas por cobrar cuando un cliente sube su
+// comprobante de transferencia para pagar una solicitud de compra de
+// refacciones (pedido). Debe configurarse en el dashboard de EmailJS
+// (duplicar cualquier plantilla existente que use las mismas variables —
+// tipo_evento, nombre_cliente, codigo_cliente, modelo_moto,
+// telefono_cliente, detalle, fecha_evento — y cambiar:
+// To Email: cuentasporcobrar@zontesmexico.com
+// Cc: grefacciones@zontesmexico.com, almacen@ivo-dimao.com, gerenciapostventa@ivo-dimao.com
+// Mientras no se configure el ID real aquí, notifyComprobantePedido() no
+// envía nada (solo deja un aviso en consola) para no romper el flujo de
+// subida del comprobante.
+const EMAILJS_TEMPLATE_ID_COMPROBANTE_PEDIDO = 'template_comprobante_pedido';
+
 // Compara nombres de distribuidor ignorando acentos, mayúsculas y espacios
 // sobrantes, para que no falle por una tilde mal colocada al capturar el dato.
 function mismoNombreDistribuidor(a, b){
@@ -847,10 +880,31 @@ async function notifySolicitudCompra(s){
     codigo_cliente: s.codigo_cliente || '',
     modelo_moto: '',
     telefono_cliente: s.telefono_cliente || '',
-    detalle: `Folio: ${s.folio}\n${s.taller_nombre ? `Taller: ${s.taller_nombre} (${s.taller_id})\n` : ''}Total estimado: ${fmtMoney(s.total_estimado)}\n\nRefacciones solicitadas:\n${listaItems}${s.notas ? `\n\nNotas: ${s.notas}` : ''}`,
+    detalle: `Folio: ${s.folio}\n${s.taller_nombre ? `Taller: ${s.taller_nombre} (${s.taller_id})\n` : ''}Total estimado: ${fmtMoney(s.total_estimado)}\n${s.direccion_envio ? `\nDirección de envío: ${s.direccion_envio}` : ''}${s.referencia ? `\nReferencia: ${s.referencia}` : ''}\n\nRefacciones solicitadas:\n${listaItems}${s.notas ? `\n\nNotas: ${s.notas}` : ''}`,
     fecha_evento: new Date().toLocaleString('es-MX'),
   });
   if(ok) logEmailSent('Nueva solicitud de compra de refacciones');
+  return ok;
+}
+
+// Aviso a Cuentas por cobrar cuando el cliente sube su comprobante de
+// transferencia para pagar un pedido (solicitud de compra de refacciones)
+// ya enviado — es la señal de que hay que validar el pago y liberar el envío.
+async function notifyComprobantePedido(s){
+  if(!EMAILJS_TEMPLATE_ID_COMPROBANTE_PEDIDO){
+    console.warn('EMAILJS_TEMPLATE_ID_COMPROBANTE_PEDIDO no configurado; no se envió el correo a Cuentas por cobrar.');
+    return false;
+  }
+  const ok = await sendEmailJS(EMAILJS_TEMPLATE_ID_COMPROBANTE_PEDIDO, {
+    tipo_evento: 'Comprobante de transferencia recibido (pedido de refacciones)',
+    nombre_cliente: s.nombre_cliente || '',
+    codigo_cliente: s.codigo_cliente || '',
+    modelo_moto: '',
+    telefono_cliente: s.telefono_cliente || '',
+    detalle: `Folio: ${s.folio}\n${s.taller_nombre ? `Taller: ${s.taller_nombre} (${s.taller_id})\n` : ''}Total estimado: ${fmtMoney(s.total_estimado)}\n${s.direccion_envio ? `\nDirección de envío: ${s.direccion_envio}` : ''}${s.referencia ? `\nReferencia: ${s.referencia}` : ''}\n\nComprobante de transferencia: ${s.comprobante_transferencia_url || ''}`,
+    fecha_evento: new Date().toLocaleString('es-MX'),
+  });
+  if(ok) logEmailSent('Comprobante de transferencia recibido (pedido de refacciones)');
   return ok;
 }
 
@@ -1865,6 +1919,17 @@ async function updateStaffRefaccionActivo(usuario, activo){
     body: JSON.stringify({ activo }),
   });
 }
+// Edición general (nombre y/o contraseña) de una cuenta de Refacciones ya
+// existente — usada por "Editar" (cambia nombre) y "Restablecer contraseña"
+// en la tabla de accesos de Refacciones dentro de Personal.
+async function updateStaffRefaccion(usuario, fields){
+  const rows = await sbRequest('staff_refacciones?usuario=eq.' + encodeURIComponent(usuario), {
+    method:'PATCH',
+    headers:{'Prefer':'return=representation'},
+    body: JSON.stringify(fields),
+  });
+  return (rows && rows[0]) || null;
+}
 
 /* ---- Cuentas del Jefe de taller (usuario + contraseña propios, acceso al
    panel exclusivo de activaciones) ---- */
@@ -1953,6 +2018,39 @@ async function updateStaffContabilidadActivo(usuario, activo){
 // o desde el panel exclusivo de Contabilidad (mismo componente en ambos).
 async function updateStaffContabilidad(usuario, fields){
   const rows = await sbRequest('staff_contabilidad?usuario=eq.' + encodeURIComponent(usuario), {
+    method:'PATCH',
+    headers:{'Prefer':'return=representation'},
+    body: JSON.stringify(fields),
+  });
+  return (rows && rows[0]) || null;
+}
+
+/* ---- Cuentas de Técnicos (usuario + contraseña propios, directorio del
+   personal técnico del taller para llevar control de alta/baja y
+   credenciales; por ahora es un directorio administrativo, sin un panel
+   propio al que el técnico inicie sesión). ---- */
+async function getAllStaffTecnicos(){
+  try{
+    const rows = await sbRequestAllPages('staff_tecnicos?select=*&order=created_at.desc');
+    return rows;
+  }catch(e){ console.error(e); return null; }
+}
+async function createStaffTecnico(s){
+  await sbRequest('staff_tecnicos', {
+    method:'POST',
+    headers:{'Prefer':'return=representation'},
+    body: JSON.stringify(s),
+  });
+}
+async function updateStaffTecnicoActivo(usuario, activo){
+  await sbRequest('staff_tecnicos?usuario=eq.' + encodeURIComponent(usuario), {
+    method:'PATCH',
+    headers:{'Prefer':'return=representation'},
+    body: JSON.stringify({ activo }),
+  });
+}
+async function updateStaffTecnico(usuario, fields){
+  const rows = await sbRequest('staff_tecnicos?usuario=eq.' + encodeURIComponent(usuario), {
     method:'PATCH',
     headers:{'Prefer':'return=representation'},
     body: JSON.stringify(fields),
@@ -6261,6 +6359,8 @@ function openPedidoModal(){
           <div class="field"><label>Correo (opcional)</label><input name="correo" type="email" value="${esc((taller && taller.email) || '')}"></div>
           <div class="field"><label>Código de cliente (opcional)</label><input name="codigo_cliente" class="mono" placeholder="LB-XXXXXX" style="text-transform:uppercase;"></div>
         </div>
+        <div class="field"><label>Dirección de envío</label><textarea required name="direccion_envio" placeholder="Calle, número, colonia, ciudad, estado y código postal"></textarea></div>
+        <div class="field"><label>Referencia (opcional)</label><input name="referencia" placeholder="Ej. Al lado de la tienda de abarrotes Lupita"></div>
         <div class="field"><label>Notas (opcional)</label><textarea name="notas" placeholder="Horario para contactarte, forma de entrega preferida, etc."></textarea></div>
         <p id="pedido-form-error" style="color:var(--danger); font-size:12.5px; margin:0 0 10px; display:none;"></p>
         <div style="display:flex; gap:10px;">
@@ -6317,13 +6417,22 @@ function openPedidoModal(){
         subtotal: Math.round(i.precio_unitario_con_iva * i.cantidad * 100) / 100,
       }));
       const total = Math.round(pedidoTotal() * 100) / 100;
+      const direccionEnvio = f.direccion_envio.value.trim();
+      const referencia = f.referencia.value.trim();
+      const nombreCliente = f.nombre.value.trim();
+      const telefonoCliente = f.telefono.value.trim();
+      const correoCliente = f.correo.value.trim();
+      const codigoCliente = f.codigo_cliente.value.trim().toUpperCase();
+      const notasCliente = f.notas.value.trim();
       await createSolicitudCompra({
         id,
-        nombre: f.nombre.value.trim(),
-        telefono: f.telefono.value.trim(),
-        correo: f.correo.value.trim(),
-        codigo_cliente: f.codigo_cliente.value.trim().toUpperCase(),
-        notas: f.notas.value.trim(),
+        nombre: nombreCliente,
+        telefono: telefonoCliente,
+        correo: correoCliente,
+        codigo_cliente: codigoCliente,
+        direccion_envio: direccionEnvio,
+        referencia: referencia,
+        notas: notasCliente,
         taller_id: taller ? taller.id : null,
         taller_nombre: taller ? taller.nombre : null,
         items,
@@ -6332,19 +6441,31 @@ function openPedidoModal(){
       });
       notifySolicitudCompra({
         folio: id,
-        nombre_cliente: f.nombre.value.trim(),
-        codigo_cliente: f.codigo_cliente.value.trim().toUpperCase() || (taller ? taller.id : ''),
-        telefono_cliente: f.telefono.value.trim(),
+        nombre_cliente: nombreCliente,
+        codigo_cliente: codigoCliente || (taller ? taller.id : ''),
+        telefono_cliente: telefonoCliente,
         taller_nombre: taller ? taller.nombre : '',
         taller_id: taller ? taller.id : '',
         total_estimado: total,
         items,
-        notas: f.notas.value.trim(),
+        direccion_envio: direccionEnvio,
+        referencia: referencia,
+        notas: notasCliente,
       });
       overlay.remove();
       state.pedidoCotizador = [];
       renderPedidoFloat();
-      showPedidoConfirmModal(id);
+      showPedidoConfirmModal(id, {
+        nombre_cliente: nombreCliente,
+        telefono_cliente: telefonoCliente,
+        correo_cliente: correoCliente,
+        codigo_cliente: codigoCliente,
+        taller_id: taller ? taller.id : '',
+        taller_nombre: taller ? taller.nombre : '',
+        total_estimado: total,
+        direccion_envio: direccionEnvio,
+        referencia: referencia,
+      });
     }catch(err){
       console.error(err);
       errEl.textContent = 'No se pudo enviar tu solicitud. Revisa tu conexión e intenta de nuevo.';
@@ -6354,7 +6475,12 @@ function openPedidoModal(){
   });
 }
 
-function showPedidoConfirmModal(id){
+// info: { nombre_cliente, telefono_cliente, correo_cliente, codigo_cliente,
+// taller_id, taller_nombre, total_estimado, direccion_envio, referencia } —
+// datos de la solicitud recién enviada, para poder armar el correo a Cuentas
+// por cobrar sin tener que volver a consultar la base de datos.
+function showPedidoConfirmModal(id, info){
+  info = info || {};
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `
@@ -6367,11 +6493,65 @@ function showPedidoConfirmModal(id){
       <div style="background:var(--surface-2); border:1px dashed var(--yellow); border-radius:10px; padding:16px; text-align:center; margin-bottom:20px;">
         <div class="id-pill" style="font-size:20px; padding:8px 16px;">${id}</div>
       </div>
-      <button class="btn btn-primary btn-block" id="modal-close-pedido">Entendido</button>
+      <div class="divider"></div>
+      <div id="pedido-comprobante-block">
+        <h3 style="font-family:'Archivo Black'; font-size:14px; margin:0 0 4px;">¿Ya hiciste tu transferencia?</h3>
+        <p style="color:var(--text-muted); font-size:12.5px; margin:0 0 12px;">Sube tu comprobante de transferencia y avisamos de inmediato a Cuentas por cobrar para agilizar tu pedido. Si aún no pagas, puedes cerrar esta ventana y subirlo después dando seguimiento a tu folio.</p>
+        <div class="field"><label>Comprobante de transferencia (PDF o imagen)</label><input type="file" accept="application/pdf,image/*" id="pedido-comprobante-file"></div>
+        <button type="button" class="btn btn-yellow btn-block" id="pedido-comprobante-btn">Subir comprobante de transferencia</button>
+        <p id="pedido-comprobante-error" style="color:var(--danger); font-size:12.5px; margin-top:10px; display:none;"></p>
+      </div>
+      <button class="btn btn-primary btn-block" id="modal-close-pedido" style="margin-top:16px;">Entendido</button>
     </div>`;
   document.body.appendChild(overlay);
   overlay.querySelector('#modal-close-pedido').addEventListener('click', ()=> overlay.remove());
   overlay.addEventListener('click', (e)=>{ if(e.target === overlay) overlay.remove(); });
+
+  const comprobanteBtn = overlay.querySelector('#pedido-comprobante-btn');
+  comprobanteBtn.addEventListener('click', async ()=>{
+    const fileInput = overlay.querySelector('#pedido-comprobante-file');
+    const errEl = overlay.querySelector('#pedido-comprobante-error');
+    errEl.style.display = 'none';
+    const file = fileInput.files[0];
+    if(!file){
+      errEl.textContent = 'Selecciona tu comprobante de transferencia antes de continuar.';
+      errEl.style.display = 'block';
+      return;
+    }
+    comprobanteBtn.disabled = true; comprobanteBtn.textContent = 'Subiendo...';
+    try{
+      const comprobanteUrl = await uploadFile(file, `pedidos/${info.taller_id || 'cliente'}/${id}`);
+      const fechaEnvio = new Date().toISOString();
+      await updateSolicitudCompra(id, {
+        comprobante_transferencia_url: comprobanteUrl,
+        comprobante_fecha_envio: fechaEnvio,
+      });
+      const emailOk = await notifyComprobantePedido({
+        folio: id,
+        nombre_cliente: info.nombre_cliente || '',
+        codigo_cliente: info.codigo_cliente || (info.taller_id || ''),
+        telefono_cliente: info.telefono_cliente || '',
+        taller_nombre: info.taller_nombre || '',
+        taller_id: info.taller_id || '',
+        total_estimado: info.total_estimado,
+        direccion_envio: info.direccion_envio || '',
+        referencia: info.referencia || '',
+        comprobante_transferencia_url: comprobanteUrl,
+      });
+      const block = overlay.querySelector('#pedido-comprobante-block');
+      block.innerHTML = `
+        <div class="m-tip-ok" style="background:var(--surface-2); border:1px solid var(--success); border-radius:10px; padding:14px 16px;">
+          <b style="color:var(--success);">✓ Comprobante enviado</b>
+          <p style="color:var(--text-muted); font-size:12.5px; margin:6px 0 0;">${emailOk ? 'Se notificó a Cuentas por cobrar. ' : '⚠ No se pudo notificar por correo (revisa la consola). '}<a href="${comprobanteUrl}" target="_blank">Ver comprobante</a></p>
+        </div>`;
+      toast('Comprobante enviado.' + (emailOk ? ' Se notificó a Cuentas por cobrar.' : ' ⚠ No se pudo notificar por correo.'), emailOk ? 'ok' : 'err');
+    }catch(err){
+      console.error(err);
+      errEl.textContent = 'No se pudo subir el comprobante. Revisa tu conexión e intenta de nuevo.';
+      errEl.style.display = 'block';
+      comprobanteBtn.disabled = false; comprobanteBtn.textContent = 'Subir comprobante de transferencia';
+    }
+  });
 }
 
 /* ---- Índice de secciones de un modelo ---- */
@@ -6796,6 +6976,7 @@ function renderAdmin(){
       <button class="alert-tab ${state.adminSection==='refacciones'?'active':''}" data-section="refacciones">Refacciones</button>
       <button class="alert-tab ${state.adminSection==='pedidos'?'active':''}" data-section="pedidos">Pedidos</button>
       <button class="alert-tab ${state.adminSection==='correcciones'?'active':''}" data-section="correcciones">Correcciones</button>
+      <button class="alert-tab ${state.adminSection==='personal'?'active':''}" data-section="personal">Personal</button>
     </div>
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
       <div id="email-usage-badge"></div>
@@ -7382,11 +7563,11 @@ function bindReportesContabilidadSection(){
    tabla separada porque el modelo de datos es distinto (sin cliente/moto ya
    registrados, sin comprobante firmado, con dos fotos en vez de una). ---- */
 // Tabla de accesos (alta/baja/edición) del equipo de Contabilidad. Es un
-// componente independiente para poder mostrarlo tanto embebido en "Pagos de
-// activaciones" del Panel admin general (showAccessManagement:true) como en
-// su propia pestaña "Personal" dentro del panel exclusivo de Contabilidad —
-// cualquier usuario de Contabilidad puede dar de alta, baja o modificar a
-// sus compañeros desde ahí, sin depender del Panel admin general.
+// componente independiente para poder mostrarlo tanto en la pestaña
+// "Personal" del Panel admin general como en su propia pestaña "Personal"
+// dentro del panel exclusivo de Contabilidad — cualquier usuario de
+// Contabilidad puede dar de alta, baja o modificar a sus compañeros desde
+// ahí también, sin depender del Panel admin general.
 function renderStaffContabilidadManagementBlock(){
   return `
     <div style="margin-bottom:28px; padding-bottom:24px; border-bottom:1px solid var(--border);">
@@ -8075,9 +8256,11 @@ async function loadRefaccionesAdmin(filter){
 }
 
 /* ---- Admin: Pedidos (solicitudes de compra desde el cotizador de Refacciones) ---- */
-function renderPedidosSection(opts){
-  opts = opts || {};
-  const accessManagementBlock = opts.showAccessManagement ? `
+// Tabla de accesos (alta/baja/edición) del equipo de Refacciones. Componente
+// independiente para poder mostrarlo desde Personal, sin depender de que la
+// pestaña "Pedidos" esté abierta.
+function renderStaffRefaccionesManagementBlock(){
+  return `
     <div style="margin-bottom:28px; padding-bottom:24px; border-bottom:1px solid var(--border);">
       <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
         <div>
@@ -8093,7 +8276,12 @@ function renderPedidosSection(opts){
         </div>
       </div>
     </div>
-  ` : '';
+  `;
+}
+
+function renderPedidosSection(opts){
+  opts = opts || {};
+  const accessManagementBlock = opts.showAccessManagement ? renderStaffRefaccionesManagementBlock() : '';
   return `
   <div class="alert-section">
     ${accessManagementBlock}
@@ -8147,7 +8335,11 @@ async function loadStaffRefaccionesAdmin(){
       <td>${esc(s.nombre || '—')}</td>
       <td class="mono">${esc(s.password)}</td>
       <td><span class="badge ${s.activo ? 'badge-success' : 'badge-danger'}">${s.activo ? 'Activo' : 'Dado de baja'}</span></td>
-      <td><button class="btn btn-ghost btn-sm" data-toggle-staff-refaccion="${esc(s.usuario)}" data-activo="${s.activo}">${s.activo ? 'Dar de baja' : 'Reactivar'}</button></td>
+      <td style="white-space:nowrap;">
+        <button class="btn btn-ghost btn-sm" data-edit-staff-refaccion="${esc(s.usuario)}">Editar</button>
+        <button class="btn btn-ghost btn-sm" data-reset-staff-refaccion="${esc(s.usuario)}">Restablecer contraseña</button>
+        <button class="btn btn-ghost btn-sm" data-toggle-staff-refaccion="${esc(s.usuario)}" data-activo="${s.activo}">${s.activo ? 'Dar de baja' : 'Reactivar'}</button>
+      </td>
     </tr>
   `).join('') : `<tr><td colspan="5"><div class="empty">Aún no hay usuarios de Refacciones registrados.</div></td></tr>`;
 
@@ -8166,6 +8358,70 @@ async function loadStaffRefaccionesAdmin(){
         btn.disabled = false;
       }
     });
+  });
+
+  tbody.querySelectorAll('[data-edit-staff-refaccion]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const usuario = btn.dataset.editStaffRefaccion;
+      const staff = (window.__allStaffRefacciones || []).find(s => s.usuario === usuario);
+      if(staff) openEditStaffRefaccionModal(staff);
+    });
+  });
+
+  tbody.querySelectorAll('[data-reset-staff-refaccion]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const usuario = btn.dataset.resetStaffRefaccion;
+      btn.disabled = true;
+      try{
+        const nuevaPassword = genTallerPassword();
+        const staff = await updateStaffRefaccion(usuario, { password: nuevaPassword });
+        await loadStaffRefaccionesAdmin();
+        showStaffRefaccionCredentialsModal(staff || { usuario, password: nuevaPassword });
+      }catch(err){
+        console.error(err);
+        toast('No se pudo restablecer la contraseña.', 'err');
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
+function openEditStaffRefaccionModal(staff){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="eyebrow">Refacciones</div>
+      <h2 style="font-family:'Archivo Black'; font-size:20px; margin:0 0 16px;">Editar ${esc(staff.usuario)}</h2>
+      <form id="staff-refaccion-edit-form">
+        <div class="field"><label>Nombre del colaborador</label><input required name="nombre" value="${esc(staff.nombre || '')}" placeholder="Ej. Ana López"></div>
+        <div style="display:flex; gap:10px; margin-top:6px;">
+          <button type="button" class="btn btn-ghost" id="cancel-staff-refaccion-edit" style="flex:1;">Cancelar</button>
+          <button type="submit" class="btn btn-primary" style="flex:1;">Guardar cambios</button>
+        </div>
+        <p id="staff-refaccion-edit-form-error" style="color:var(--danger); font-size:12.5px; margin-top:10px; display:none;"></p>
+      </form>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#cancel-staff-refaccion-edit').addEventListener('click', ()=> overlay.remove());
+  overlay.querySelector('#staff-refaccion-edit-form').addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const f = e.target;
+    const btn = f.querySelector('button[type=submit]');
+    const errEl = document.getElementById('staff-refaccion-edit-form-error');
+    errEl.style.display = 'none';
+    btn.disabled = true; btn.textContent = 'Guardando...';
+    try{
+      await updateStaffRefaccion(staff.usuario, { nombre: f.nombre.value.trim() });
+      overlay.remove();
+      toast('Usuario actualizado.', 'ok');
+      await loadStaffRefaccionesAdmin();
+    }catch(err){
+      console.error(err);
+      errEl.textContent = 'No se pudo guardar el cambio.';
+      errEl.style.display = 'block';
+      btn.disabled = false; btn.textContent = 'Guardar cambios';
+    }
   });
 }
 
@@ -8234,6 +8490,256 @@ function showStaffRefaccionCredentialsModal(staff){
     </div>`;
   document.body.appendChild(overlay);
   overlay.querySelector('#close-staff-refaccion-cred').addEventListener('click', ()=> overlay.remove());
+}
+
+/* ---- Directorio de Técnicos (usuario + contraseña propios; ver comentario
+   en getAllStaffTecnicos sobre el alcance actual). Mismo patrón que
+   Refacciones y Contabilidad. ---- */
+function renderStaffTecnicosManagementBlock(){
+  return `
+    <div style="margin-bottom:28px; padding-bottom:24px; border-bottom:1px solid var(--border);">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+        <div>
+          <h3 style="font-family:'Archivo Black'; font-size:15px; margin:0 0 4px;">Directorio de Técnicos</h3>
+          <p style="color:var(--text-muted); font-size:12.5px; margin:0;">Usuario y contraseña de cada técnico, para llevar control de alta, baja y credenciales.</p>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="staff-tecnico-add-btn">+ Nuevo técnico</button>
+      </div>
+      <div class="card" style="padding:0; overflow:hidden;">
+        <div style="overflow-x:auto;">
+          <table><thead><tr><th>Usuario</th><th>Nombre</th><th>Contraseña</th><th>Estatus</th><th></th></tr></thead>
+          <tbody id="staff-tecnicos-tbody"></tbody></table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function loadStaffTecnicosAdmin(){
+  const tbody = document.getElementById('staff-tecnicos-tbody');
+  if(!tbody) return;
+  const items = await getAllStaffTecnicos();
+  if(items === null){
+    tbody.innerHTML = `<tr><td colspan="5"><div class="empty">No se pudo conectar a la base de datos.</div></td></tr>`;
+    return;
+  }
+  window.__allStaffTecnicos = items;
+  tbody.innerHTML = items.length ? items.map(s => `
+    <tr>
+      <td class="mono">${esc(s.usuario)}</td>
+      <td>${esc(s.nombre || '—')}</td>
+      <td class="mono">${esc(s.password)}</td>
+      <td><span class="badge ${s.activo ? 'badge-success' : 'badge-danger'}">${s.activo ? 'Activo' : 'Dado de baja'}</span></td>
+      <td style="white-space:nowrap;">
+        <button class="btn btn-ghost btn-sm" data-edit-staff-tecnico="${esc(s.usuario)}">Editar</button>
+        <button class="btn btn-ghost btn-sm" data-reset-staff-tecnico="${esc(s.usuario)}">Restablecer contraseña</button>
+        <button class="btn btn-ghost btn-sm" data-toggle-staff-tecnico="${esc(s.usuario)}" data-activo="${s.activo}">${s.activo ? 'Dar de baja' : 'Reactivar'}</button>
+      </td>
+    </tr>
+  `).join('') : `<tr><td colspan="5"><div class="empty">Aún no hay técnicos registrados.</div></td></tr>`;
+
+  tbody.querySelectorAll('[data-toggle-staff-tecnico]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const usuario = btn.dataset.toggleStaffTecnico;
+      const nuevoActivo = !(btn.dataset.activo === 'true');
+      btn.disabled = true;
+      try{
+        await updateStaffTecnicoActivo(usuario, nuevoActivo);
+        toast(nuevoActivo ? 'Técnico reactivado.' : 'Técnico dado de baja.', 'ok');
+        await loadStaffTecnicosAdmin();
+      }catch(err){
+        console.error(err);
+        toast('No se pudo actualizar el técnico.', 'err');
+        btn.disabled = false;
+      }
+    });
+  });
+
+  tbody.querySelectorAll('[data-edit-staff-tecnico]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const usuario = btn.dataset.editStaffTecnico;
+      const staff = (window.__allStaffTecnicos || []).find(s => s.usuario === usuario);
+      if(staff) openEditStaffTecnicoModal(staff);
+    });
+  });
+
+  tbody.querySelectorAll('[data-reset-staff-tecnico]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const usuario = btn.dataset.resetStaffTecnico;
+      btn.disabled = true;
+      try{
+        const nuevaPassword = genTallerPassword();
+        const staff = await updateStaffTecnico(usuario, { password: nuevaPassword });
+        await loadStaffTecnicosAdmin();
+        showStaffTecnicoCredentialsModal(staff || { usuario, password: nuevaPassword });
+      }catch(err){
+        console.error(err);
+        toast('No se pudo restablecer la contraseña.', 'err');
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
+function openEditStaffTecnicoModal(staff){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="eyebrow">Técnicos</div>
+      <h2 style="font-family:'Archivo Black'; font-size:20px; margin:0 0 16px;">Editar ${esc(staff.usuario)}</h2>
+      <form id="staff-tecnico-edit-form">
+        <div class="field"><label>Nombre del técnico</label><input required name="nombre" value="${esc(staff.nombre || '')}" placeholder="Ej. Carlos Mendoza"></div>
+        <div style="display:flex; gap:10px; margin-top:6px;">
+          <button type="button" class="btn btn-ghost" id="cancel-staff-tecnico-edit" style="flex:1;">Cancelar</button>
+          <button type="submit" class="btn btn-primary" style="flex:1;">Guardar cambios</button>
+        </div>
+        <p id="staff-tecnico-edit-form-error" style="color:var(--danger); font-size:12.5px; margin-top:10px; display:none;"></p>
+      </form>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#cancel-staff-tecnico-edit').addEventListener('click', ()=> overlay.remove());
+  overlay.querySelector('#staff-tecnico-edit-form').addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const f = e.target;
+    const btn = f.querySelector('button[type=submit]');
+    const errEl = document.getElementById('staff-tecnico-edit-form-error');
+    errEl.style.display = 'none';
+    btn.disabled = true; btn.textContent = 'Guardando...';
+    try{
+      await updateStaffTecnico(staff.usuario, { nombre: f.nombre.value.trim() });
+      overlay.remove();
+      toast('Técnico actualizado.', 'ok');
+      await loadStaffTecnicosAdmin();
+    }catch(err){
+      console.error(err);
+      errEl.textContent = 'No se pudo guardar el cambio.';
+      errEl.style.display = 'block';
+      btn.disabled = false; btn.textContent = 'Guardar cambios';
+    }
+  });
+}
+
+function openAddStaffTecnicoModal(){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="eyebrow">Técnicos</div>
+      <h2 style="font-family:'Archivo Black'; font-size:20px; margin:0 0 16px;">Nuevo técnico</h2>
+      <form id="staff-tecnico-form">
+        <div class="field"><label>Nombre del técnico</label><input required name="nombre" placeholder="Ej. Carlos Mendoza"></div>
+        <div class="field"><label>Usuario</label><input required name="usuario" class="mono" placeholder="Ej. carlos.mendoza" autocomplete="off"></div>
+        <p style="color:var(--text-faint); font-size:11.5px; margin:-6px 0 6px;">La contraseña se genera automáticamente y se muestra al guardar.</p>
+        <div style="display:flex; gap:10px; margin-top:6px;">
+          <button type="button" class="btn btn-ghost" id="cancel-staff-tecnico" style="flex:1;">Cancelar</button>
+          <button type="submit" class="btn btn-primary" style="flex:1;">Guardar técnico</button>
+        </div>
+        <p id="staff-tecnico-form-error" style="color:var(--danger); font-size:12.5px; margin-top:10px; display:none;"></p>
+      </form>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#cancel-staff-tecnico').addEventListener('click', ()=> overlay.remove());
+  overlay.querySelector('#staff-tecnico-form').addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const f = e.target;
+    const btn = f.querySelector('button[type=submit]');
+    const errEl = document.getElementById('staff-tecnico-form-error');
+    errEl.style.display = 'none';
+    const usuario = f.usuario.value.trim().toLowerCase();
+    if(!usuario){ return; }
+    btn.disabled = true; btn.textContent = 'Guardando...';
+    try{
+      const staff = {
+        usuario,
+        nombre: f.nombre.value.trim(),
+        password: genTallerPassword(),
+        activo: true,
+      };
+      await createStaffTecnico(staff);
+      overlay.remove();
+      await loadStaffTecnicosAdmin();
+      showStaffTecnicoCredentialsModal(staff);
+    }catch(err){
+      console.error(err);
+      errEl.textContent = 'No se pudo guardar el técnico. Puede que ya exista ese usuario.';
+      errEl.style.display = 'block';
+      btn.disabled = false; btn.textContent = 'Guardar técnico';
+    }
+  });
+}
+
+function showStaffTecnicoCredentialsModal(staff){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="eyebrow">Técnico registrado</div>
+      <h2 style="font-family:'Archivo Black'; font-size:20px; margin:0 0 10px;">Comparte estos accesos</h2>
+      <p style="color:var(--text-muted); font-size:13px; margin:0 0 16px;">Estas son las credenciales de ${esc(staff.nombre || staff.usuario)}:</p>
+      <div style="background:var(--surface-2); border:1px dashed var(--yellow); border-radius:10px; padding:16px; margin-bottom:20px;">
+        <div style="margin-bottom:8px;"><span style="color:var(--text-muted); font-size:12px;">Usuario</span><br><span class="id-pill" style="font-size:16px;">${esc(staff.usuario)}</span></div>
+        <div><span style="color:var(--text-muted); font-size:12px;">Contraseña</span><br><span class="id-pill" style="font-size:16px;">${esc(staff.password)}</span></div>
+      </div>
+      <button class="btn btn-primary btn-block" id="close-staff-tecnico-cred">Entendido</button>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#close-staff-tecnico-cred').addEventListener('click', ()=> overlay.remove());
+}
+
+/* ---- Personal: apartado del Panel admin general que concentra el alta,
+   baja, edición y contraseñas de los tres tipos de personal con acceso
+   propio (Técnicos, Refacciones, Contabilidad) en un solo lugar, en vez de
+   estar repartido dentro de "Pedidos" y "Pagos de activaciones". Reutiliza
+   los mismos componentes/funciones que ya usan esas pestañas y el panel
+   exclusivo de Contabilidad, para no duplicar lógica. ---- */
+function renderPersonalAdminSection(){
+  const sub = state.personalSubTab || 'tecnicos';
+  const blockHtml = sub === 'refacciones' ? renderStaffRefaccionesManagementBlock()
+    : sub === 'contabilidad' ? renderStaffContabilidadManagementBlock()
+    : renderStaffTecnicosManagementBlock();
+  return `
+  <div class="alert-section">
+    <p style="color:var(--text-muted); font-size:12.5px; margin:0 0 16px; max-width:640px;">Alta, baja y contraseñas del personal con acceso propio a los paneles de Letbe.</p>
+    <div class="alert-tabs" id="personal-sub-tabs" style="margin-bottom:20px;">
+      <button class="alert-tab ${sub==='tecnicos'?'active':''}" data-sub="tecnicos">Técnicos</button>
+      <button class="alert-tab ${sub==='refacciones'?'active':''}" data-sub="refacciones">Refacciones</button>
+      <button class="alert-tab ${sub==='contabilidad'?'active':''}" data-sub="contabilidad">Contabilidad</button>
+    </div>
+    <div id="personal-sub-content">${blockHtml}</div>
+  </div>
+  `;
+}
+
+async function loadPersonalSubTabData(){
+  const sub = state.personalSubTab || 'tecnicos';
+  if(sub === 'refacciones'){
+    await loadStaffRefaccionesAdmin();
+    const btn = document.getElementById('staff-refaccion-add-btn');
+    if(btn) btn.addEventListener('click', openAddStaffRefaccionModal);
+  }else if(sub === 'contabilidad'){
+    await loadStaffContabilidadAdmin();
+    const btn = document.getElementById('staff-contabilidad-add-btn');
+    if(btn) btn.addEventListener('click', openAddStaffContabilidadModal);
+  }else{
+    await loadStaffTecnicosAdmin();
+    const btn = document.getElementById('staff-tecnico-add-btn');
+    if(btn) btn.addEventListener('click', openAddStaffTecnicoModal);
+  }
+}
+
+function bindPersonalAdminSection(){
+  document.querySelectorAll('#personal-sub-tabs .alert-tab').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      state.personalSubTab = btn.dataset.sub;
+      document.querySelectorAll('#personal-sub-tabs .alert-tab').forEach(b => b.classList.toggle('active', b===btn));
+      const content = document.getElementById('personal-sub-content');
+      content.innerHTML = state.personalSubTab === 'refacciones' ? renderStaffRefaccionesManagementBlock()
+        : state.personalSubTab === 'contabilidad' ? renderStaffContabilidadManagementBlock()
+        : renderStaffTecnicosManagementBlock();
+      loadPersonalSubTabData();
+    });
+  });
 }
 
 /* ---- Cuentas del Jefe de taller (mismo patrón que Refacciones) ---- */
@@ -8358,8 +8864,12 @@ async function exportPedidosExcel(){
       'Refacciones solicitadas': (p.items||[]).map(i => `${i.numero_parte} · ${i.nombre} · Cant.${i.cantidad} · ${fmtMoney(i.subtotal)}`).join(' | '),
       'Total estimado': p.total_estimado || '',
       'Estatus': pedidoStatusInfo(p.status).label,
+      'Dirección de envío': p.direccion_envio || '',
+      'Referencia': p.referencia || '',
       'Notas del cliente': p.notas || '',
       'Notas internas': p.admin_notes || '',
+      'Comprobante de transferencia': p.comprobante_transferencia_url || '',
+      'Fecha de envío del comprobante': (p.comprobante_fecha_envio || '').slice(0,10),
       'Fecha de solicitud': (p.created_at || '').slice(0,10),
       'Última actualización': (p.updated_at || '').slice(0,10),
     }));
@@ -8417,7 +8927,11 @@ function renderPedidosAdminList(items){
           Total estimado: <span class="mono" style="margin-left:8px;">${fmtMoney(p.total_estimado)}</span>
         </div>
       </div>
-      ${p.notas ? `<div style="margin-top:10px; color:var(--text-muted); font-size:12.5px;"><b>Notas del cliente:</b> ${esc(p.notas)}</div>` : ''}
+      ${p.direccion_envio ? `<div style="margin-top:10px; color:var(--text-muted); font-size:12.5px;"><b>Dirección de envío:</b> ${esc(p.direccion_envio)}${p.referencia ? ` · <b>Referencia:</b> ${esc(p.referencia)}` : ''}</div>` : ''}
+      ${p.notas ? `<div style="margin-top:6px; color:var(--text-muted); font-size:12.5px;"><b>Notas del cliente:</b> ${esc(p.notas)}</div>` : ''}
+      ${p.comprobante_transferencia_url
+        ? `<div style="margin-top:10px;"><a href="${p.comprobante_transferencia_url}" target="_blank" class="btn btn-ghost btn-sm">🧾 Ver comprobante de transferencia</a> <span style="color:var(--text-faint); font-size:11.5px;">${p.comprobante_fecha_envio ? `· enviado el ${new Date(p.comprobante_fecha_envio).toLocaleString('es-MX')}` : ''}</span></div>`
+        : `<div style="margin-top:10px; color:var(--text-faint); font-size:12px;">Aún no sube comprobante de transferencia.</div>`}
       <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
         <div class="field" style="margin-bottom:10px;">
           <label>Notas internas de seguimiento</label>
@@ -10446,8 +10960,12 @@ async function exportExcelReport(){
       'Refacciones solicitadas': (p.items||[]).map(i => `${i.numero_parte} · ${i.nombre} · Cant.${i.cantidad} · ${fmtMoney(i.subtotal)}`).join(' | '),
       'Total estimado': p.total_estimado || '',
       'Estatus': pedidoStatusInfo(p.status).label,
+      'Dirección de envío': p.direccion_envio || '',
+      'Referencia': p.referencia || '',
       'Notas del cliente': p.notas || '',
       'Notas internas': p.admin_notes || '',
+      'Comprobante de transferencia': p.comprobante_transferencia_url || '',
+      'Fecha de envío del comprobante': (p.comprobante_fecha_envio || '').slice(0,10),
       'Fecha de solicitud': (p.created_at || '').slice(0,10),
       'Última actualización': (p.updated_at || '').slice(0,10),
     }));
@@ -10747,10 +11265,8 @@ async function renderAdminSectionContent(){
     await loadPagosGarantiasAdmin();
     bindPagosGarantiasSection();
   }else if(state.adminSection === 'pagos_activaciones'){
-    content.innerHTML = renderPagosActivacionesSection({ showAccessManagement: true });
+    content.innerHTML = renderPagosActivacionesSection({ showAccessManagement: false });
     await loadPagosActivacionesAdmin();
-    await loadStaffContabilidadAdmin();
-    document.getElementById('staff-contabilidad-add-btn').addEventListener('click', openAddStaffContabilidadModal);
     bindPagosActivacionesSection();
   }else if(state.adminSection === 'ordenes'){
     content.innerHTML = renderOrdenesAdminSection();
@@ -10794,11 +11310,9 @@ async function renderAdminSectionContent(){
       handlePreciosUpload(file);
     });
   }else if(state.adminSection === 'pedidos'){
-    content.innerHTML = renderPedidosSection({ showAccessManagement: true });
+    content.innerHTML = renderPedidosSection({ showAccessManagement: false });
     state.pedidosTab = state.pedidosTab || 'all';
     await loadPedidosAdmin();
-    await loadStaffRefaccionesAdmin();
-    document.getElementById('staff-refaccion-add-btn').addEventListener('click', openAddStaffRefaccionModal);
     document.getElementById('pedidos-export-btn').addEventListener('click', exportPedidosExcel);
     document.querySelectorAll('#pedidos-tabs .alert-tab').forEach(btn=>{
       btn.addEventListener('click', ()=>{
@@ -10818,6 +11332,11 @@ async function renderAdminSectionContent(){
         renderCorreccionesAdminList(window.__allCorrecciones || []);
       });
     });
+  }else if(state.adminSection === 'personal'){
+    state.personalSubTab = state.personalSubTab || 'tecnicos';
+    content.innerHTML = renderPersonalAdminSection();
+    bindPersonalAdminSection();
+    await loadPersonalSubTabData();
   }else{
     content.innerHTML = renderClientesSection();
     state.alertTab = state.alertTab || 'all';
@@ -11083,19 +11602,20 @@ async function render(){
   logoImg.src = OFFICIAL_LOGO_URL;
 })();
 
-// Cuando la herramienta se carga dentro de un <iframe> (p.ej. incrustada en
-// la página oficial de Letbe para el público), se oculta el botón "Panel
-// admin" del menú — el acceso administrativo queda reservado para cuando el
-// staff entra directo a la URL de la herramienta (fuera del iframe). No es
-// una medida de seguridad (el panel sigue protegido por su propio código de
-// acceso), solo evita mostrarle ese botón a cualquier visitante público.
-(function hideAdminButtonInIframe(){
-  let inIframe = false;
-  try{ inIframe = window.self !== window.top; }catch(e){ inIframe = true; }
-  if(inIframe){
-    const adminBtn = document.querySelector('#nav button[data-view="admin"]');
-    if(adminBtn) adminBtn.remove();
-  }
+// Acceso de staff: ya no es un botón normal del menú (#nav), sino el punto
+// discreto "#staff-fab" (ver HTML y su CSS ".staff-fab" más arriba). Se
+// muestra siempre, incluso dentro del <iframe> de la página pública de
+// Letbe — a propósito, para que el equipo interno pueda entrar sin salir
+// del sitio incrustado — pero sin texto ni ícono que delate qué es. No es
+// una medida de seguridad (el panel sigue protegido por su propio usuario/
+// código de acceso), solo evita exhibirlo como un botón más del menú.
+(function bindStaffFab(){
+  const staffFab = document.getElementById('staff-fab');
+  if(!staffFab) return;
+  staffFab.addEventListener('click', ()=>{
+    state.view = 'admin';
+    render();
+  });
 })();
 
 document.querySelectorAll('#nav button').forEach(b=>{
@@ -11136,8 +11656,9 @@ function closeNavDropdown(){
 // autocontenido en la carpeta "manuals/", junto a este archivo). El botón
 // flotante "Ayuda" abre el manual correspondiente a la vista activa en ese
 // momento — incluye los sub-portales de Socios comerciales (Distribuidor y
-// Retail comparten manual) y el panel de Staff de Refacciones dentro de
-// Panel admin.
+// Retail comparten manual) y, dentro de Panel admin, los tres paneles
+// exclusivos de staff (Refacciones, Contabilidad y Jefe de taller), cada
+// uno con su propio manual en vez del manual general de Panel admin.
 const HELP_MANUALS = {
   registro:        { file: 'manual-registro.html',           label: 'Activa tu garantía' },
   consulta:        { file: 'manual-bitacora.html',            label: 'Bitácora digital' },
@@ -11151,6 +11672,12 @@ const HELP_MANUALS = {
 function currentHelpManual(){
   if(state.view === 'admin' && state.refaccionesStaffAuthed){
     return { file: 'manual-refacciones-staff.html', label: 'Staff de Refacciones' };
+  }
+  if(state.view === 'admin' && state.contabilidadAuthed){
+    return { file: 'manual-contabilidad.html', label: 'Staff de Contabilidad' };
+  }
+  if(state.view === 'admin' && state.jefeTallerAuthed){
+    return { file: 'manual-jefe-taller.html', label: 'Jefe de taller' };
   }
   return HELP_MANUALS[state.view] || HELP_MANUALS.registro;
 }
