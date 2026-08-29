@@ -7408,9 +7408,18 @@ function renderValidacionPagosRefaccionesList(items){
         <span style="color:var(--text-faint); font-size:11.5px;">${p.comprobante_fecha_envio ? `· enviado el ${new Date(p.comprobante_fecha_envio).toLocaleString('es-MX')}` : ''}</span>
       </div>
       ${validado ? `<div style="margin-top:10px; font-size:12px; color:var(--text-muted);">Validado por <b>${esc(p.pago_validado_por || '—')}</b> el ${p.pago_validado_fecha ? new Date(p.pago_validado_fecha).toLocaleString('es-MX') : '—'}</div>` : ''}
+      ${!validado ? `
       <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
-        <button class="btn ${validado ? 'btn-ghost' : 'btn-primary'} btn-sm" data-valida-pedido="${esc(p.id)}" data-nuevo="${validado ? '0' : '1'}">${validado ? 'Quitar validación' : '✓ Validar pago y autorizar venta'}</button>
+        <div class="eyebrow" style="font-size:10px; margin-bottom:8px;">Factura</div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
+          <div class="field" style="flex:1; min-width:160px;"><label>N° de factura (opcional)</label><input type="text" class="factura-numero-input" data-pedido="${esc(p.id)}" placeholder="Ej. F-000123"></div>
+          <div class="field" style="flex:1; min-width:200px;"><label>Archivo de factura (PDF o imagen)</label><input type="file" accept="application/pdf,image/*" class="factura-file-input" data-pedido="${esc(p.id)}"></div>
+        </div>
+        <div style="margin-top:12px;">
+          <button class="btn btn-primary btn-sm" data-valida-pedido="${esc(p.id)}">✓ Validar pago y subir factura</button>
+        </div>
       </div>
+      ` : `
       <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
         <div class="eyebrow" style="font-size:10px; margin-bottom:8px;">Factura</div>
         ${p.factura_url
@@ -7432,27 +7441,62 @@ function renderValidacionPagosRefaccionesList(items){
                <button class="btn btn-primary btn-sm factura-upload-btn" data-pedido="${esc(p.id)}">📄 Subir factura</button>
              </div>`}
       </div>
+      <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
+        <button class="btn btn-ghost btn-sm" data-quita-validacion="${esc(p.id)}">Quitar validación</button>
+      </div>
+      `}
     </div>`;
   }).join('');
 
   container.querySelectorAll('[data-valida-pedido]').forEach(btn=>{
     btn.addEventListener('click', async ()=>{
       const id = btn.dataset.validaPedido;
-      const nuevo = btn.dataset.nuevo === '1';
+      const fileInput = container.querySelector(`.factura-file-input[data-pedido="${CSS.escape(id)}"]`);
+      const numeroInput = container.querySelector(`.factura-numero-input[data-pedido="${CSS.escape(id)}"]`);
+      const file = fileInput && fileInput.files[0];
+      if(!file){
+        toast('Sube el archivo de la factura antes de validar el pago.', 'err');
+        return;
+      }
       const staff = state.contabilidadAuthed;
+      const originalText = btn.textContent;
+      btn.disabled = true; btn.textContent = 'Guardando...';
+      try{
+        const facturaUrl = await uploadFile(file, `pedidos/facturas/${id}`);
+        await updateSolicitudCompra(id, {
+          pago_validado: true,
+          pago_validado_por: (staff && (staff.nombre || staff.usuario)) || '',
+          pago_validado_fecha: new Date().toISOString(),
+          factura_url: facturaUrl,
+          factura_numero: (numeroInput && numeroInput.value.trim()) || null,
+          factura_fecha_subida: new Date().toISOString(),
+        });
+        toast('Pago validado y factura subida. Venta autorizada para Refacciones.', 'ok');
+        await loadValidacionPagosRefacciones();
+      }catch(err){
+        console.error(err);
+        toast('No se pudo completar. Intenta de nuevo.', 'err');
+        btn.disabled = false; btn.textContent = originalText;
+      }
+    });
+  });
+
+  container.querySelectorAll('[data-quita-validacion]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.quitaValidacion;
       btn.disabled = true; btn.textContent = 'Guardando...';
       try{
         await updateSolicitudCompra(id, {
-          pago_validado: nuevo,
-          pago_validado_por: nuevo ? (staff && (staff.nombre || staff.usuario) || '') : null,
-          pago_validado_fecha: nuevo ? new Date().toISOString() : null,
+          pago_validado: false,
+          pago_validado_por: null,
+          pago_validado_fecha: null,
         });
-        toast(nuevo ? 'Pago validado. Venta autorizada para Refacciones.' : 'Se quitó la validación del pago.', 'ok');
+        toast('Se quitó la validación del pago.', 'ok');
         await loadValidacionPagosRefacciones();
       }catch(err){
         console.error(err);
         toast('No se pudo actualizar. Intenta de nuevo.', 'err');
-        btn.disabled = false;
+        btn.disabled = false; btn.textContent = 'Quitar validación';
       }
     });
   });
