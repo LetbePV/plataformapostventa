@@ -725,18 +725,14 @@ const EMAILJS_TEMPLATE_ID_PAGO_GARANTIA = 'template_ikeplos';
 // envío semanal automático (ver supabase/functions/reporte-pagos-garantias).
 const EMAILJS_TEMPLATE_ID_REPORTE_PAGOS = 'template_yjhj2nl';
 
-// Plantilla para avisar a Cuentas por cobrar cuando un cliente sube su
-// comprobante de transferencia para pagar una solicitud de compra de
-// refacciones (pedido). Debe configurarse en el dashboard de EmailJS
-// (duplicar cualquier plantilla existente que use las mismas variables —
-// tipo_evento, nombre_cliente, codigo_cliente, modelo_moto,
-// telefono_cliente, detalle, fecha_evento — y cambiar:
-// To Email: cuentasporcobrar@zontesmexico.com
-// Cc: grefacciones@zontesmexico.com, almacen@ivo-dimao.com, gerenciapostventa@ivo-dimao.com
-// Mientras no se configure el ID real aquí, notifyComprobantePedido() no
-// envía nada (solo deja un aviso en consola) para no romper el flujo de
-// subida del comprobante.
-const EMAILJS_TEMPLATE_ID_COMPROBANTE_PEDIDO = 'template_comprobante_pedido';
+// Plantilla para avisar a Contabilidad (Cuentas por pagar) cuando un cliente
+// sube su comprobante de transferencia para pagar una solicitud de compra de
+// refacciones (pedido). Configurada en el dashboard de EmailJS con las
+// variables tipo_evento, nombre_cliente, codigo_cliente, telefono_cliente,
+// detalle, fecha_evento —
+// To Email: cuentasporpagar@zontesmexico.com
+// Cc: gerenciapostventa@ivo-dimao.com, contabilidadivo@ivo-dimao.com, almacen@zontesmexico.com, grefacciones@ivo-dimao.com
+const EMAILJS_TEMPLATE_ID_COMPROBANTE_PEDIDO = 'template_ncm3kg1';
 
 // Compara nombres de distribuidor ignorando acentos, mayúsculas y espacios
 // sobrantes, para que no falle por una tilde mal colocada al capturar el dato.
@@ -6355,7 +6351,7 @@ function bankTransferInfoCard(){
       <b>Tipo de moneda:</b> Pesos
     </div>
     <p style="font-size:11.5px; color:var(--text-muted); margin-top:12px; margin-bottom:0;">
-      Contacto para confirmación de depósitos: <a href="mailto:cuentasporcobrar@zontesmexico.com" style="color:var(--yellow-ink);">cuentasporcobrar@zontesmexico.com</a>
+      Contacto para confirmación de depósitos: <a href="mailto:cuentasporpagar@zontesmexico.com" style="color:var(--yellow-ink);">cuentasporpagar@zontesmexico.com</a>
     </p>
   </div>`;
 }
