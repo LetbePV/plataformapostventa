@@ -1251,6 +1251,20 @@ async function updateSolicitudCompra(id, fields){
     body: JSON.stringify({ ...fields, updated_at: new Date().toISOString() }),
   });
 }
+// Consulta pública de un solo pedido por folio (usada por el cliente para dar
+// seguimiento a su pedido y, una vez que Contabilidad valida el pago y sube
+// la factura, para ver/descargar su factura). Devuelve null si no existe o
+// si hay un error de conexión (indistinguibles desde el punto de vista del
+// cliente: en ambos casos se le pide verificar el folio).
+async function getSolicitudCompra(id){
+  try{
+    const rows = await sbRequest('solicitudes_compra?id=eq.' + encodeURIComponent(id) + '&select=*', { method:'GET' });
+    return rows && rows.length ? rows[0] : null;
+  }catch(e){
+    console.error(e);
+    return null;
+  }
+}
 
 // Parsea un catálogo de refacciones (varias hojas F1, F2, ... por subsistema,
 // con encabezado SN / PART CODE / CHINESE NAME / ENGLISH NAME / QTY / REMARK)
@@ -6169,6 +6183,8 @@ function renderRefaccionesHub(){
 
   ${tallerLockCard()}
 
+  <button class="btn btn-ghost" id="consulta-pedido-btn" style="margin-bottom:24px;">📦 Consultar mi pedido</button>
+
   <div id="cotizador-result" style="margin-bottom:24px;"></div>
 
   <h3 style="font-family:'Archivo Black'; font-size:16px; margin:0 0 14px;">Catálogo por modelo</h3>
@@ -6179,6 +6195,7 @@ function bindRefaccionesHub(){
   document.getElementById('cot-buscar-btn').addEventListener('click', doCotizadorSearch);
   document.getElementById('cot-parte-input').addEventListener('keydown', e=>{ if(e.key==='Enter') doCotizadorSearch(); });
   bindTallerLockCard();
+  document.getElementById('consulta-pedido-btn').addEventListener('click', openConsultaPedidoModal);
   document.querySelectorAll('[data-open-modelo]').forEach(card=>{
     card.addEventListener('click', ()=>{
       state.refaccionesSub = 'modelo';
@@ -6186,6 +6203,76 @@ function bindRefaccionesHub(){
       render();
     });
   });
+}
+
+/* ---- Consulta pública de "Mi pedido" por folio: el cliente ve el estatus
+   de su pedido, si su comprobante ya fue recibido, si Contabilidad ya
+   validó el pago y, una vez que la factura ya fue subida, puede verla y
+   descargarla directamente desde aquí. ---- */
+function openConsultaPedidoModal(){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:520px;">
+      <div class="eyebrow">Seguimiento de pedido</div>
+      <h2 style="font-family:'Archivo Black'; font-size:20px; margin:0 0 6px;">Consulta tu pedido</h2>
+      <p style="color:var(--text-muted); font-size:12.5px; margin:0 0 16px;">Ingresa el folio que te dimos al hacer tu pedido para ver su estatus y, una vez lista, descargar tu factura.</p>
+      <div class="field" style="margin-bottom:14px;">
+        <label>Folio de tu pedido</label>
+        <input id="consulta-pedido-folio" class="mono" placeholder="PC-XXXXXX" style="text-transform:uppercase;">
+      </div>
+      <button class="btn btn-primary btn-block" id="consulta-pedido-buscar-btn">Buscar</button>
+      <p id="consulta-pedido-error" style="color:var(--danger); font-size:12.5px; margin-top:10px; display:none;"></p>
+      <div id="consulta-pedido-result" style="margin-top:18px;"></div>
+      <button type="button" class="btn btn-ghost btn-block" id="cerrar-consulta-pedido" style="margin-top:16px;">Cerrar</button>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', (e)=>{ if(e.target === overlay) overlay.remove(); });
+  overlay.querySelector('#cerrar-consulta-pedido').addEventListener('click', ()=> overlay.remove());
+
+  const folioInput = overlay.querySelector('#consulta-pedido-folio');
+  const errEl = overlay.querySelector('#consulta-pedido-error');
+  const resultEl = overlay.querySelector('#consulta-pedido-result');
+  const buscarBtn = overlay.querySelector('#consulta-pedido-buscar-btn');
+
+  const buscar = async ()=>{
+    const folio = folioInput.value.trim().toUpperCase();
+    errEl.style.display = 'none';
+    resultEl.innerHTML = '';
+    if(!folio) return;
+    buscarBtn.disabled = true; buscarBtn.textContent = 'Buscando...';
+    const p = await getSolicitudCompra(folio);
+    buscarBtn.disabled = false; buscarBtn.textContent = 'Buscar';
+    if(!p){
+      errEl.textContent = 'No encontramos ese folio. Verifica que esté completo e intenta de nuevo.';
+      errEl.style.display = 'block';
+      return;
+    }
+    const info = pedidoStatusInfo(p.status);
+    resultEl.innerHTML = `
+      <div class="card">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+          <div class="id-pill">${esc(p.id)}</div>
+          <span class="badge ${info.badge}">${info.label}</span>
+        </div>
+        <div style="margin-top:10px; font-size:12.5px;"><b>Total estimado:</b> ${fmtMoney(p.total_estimado)}</div>
+        <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
+          ${p.comprobante_transferencia_url
+            ? `<div style="font-size:12.5px; color:var(--success);">✓ Recibimos tu comprobante de transferencia${p.comprobante_fecha_envio ? ` el ${new Date(p.comprobante_fecha_envio).toLocaleString('es-MX')}` : ''}.</div>`
+            : `<div style="font-size:12.5px; color:var(--text-muted);">Aún no hemos recibido tu comprobante de transferencia.</div>`}
+          ${p.pago_validado
+            ? `<div style="font-size:12.5px; color:var(--success); margin-top:6px;">✓ Tu pago ya fue validado por Cuentas por cobrar.</div>`
+            : p.comprobante_transferencia_url ? `<div style="font-size:12.5px; color:var(--text-muted); margin-top:6px;">Tu comprobante está en revisión por Cuentas por cobrar.</div>` : ''}
+        </div>
+        ${p.factura_url ? `
+        <div style="margin-top:14px; background:var(--surface-2); border:1px solid var(--success); border-radius:10px; padding:14px 16px;">
+          <b style="color:var(--success); font-size:13px;">📄 Tu factura ya está lista${p.factura_numero ? ` (${esc(p.factura_numero)})` : ''}</b>
+          <div style="margin-top:10px;"><a href="${p.factura_url}" target="_blank" class="btn btn-primary btn-block">Ver y descargar factura</a></div>
+        </div>` : (p.pago_validado ? `<div style="margin-top:14px; font-size:12.5px; color:var(--text-muted);">Tu factura está por generarse. Vuelve a consultar tu folio en un rato.</div>` : '')}
+      </div>`;
+  };
+  buscarBtn.addEventListener('click', buscar);
+  folioInput.addEventListener('keydown', e => { if(e.key === 'Enter') buscar(); });
 }
 async function doCotizadorSearch(){
   const q = document.getElementById('cot-parte-input').value.trim();
@@ -6488,7 +6575,7 @@ function showPedidoConfirmModal(id, info){
       <div class="eyebrow">Solicitud enviada</div>
       <h2 style="font-family:'Archivo Black'; font-size:22px; margin:0 0 10px;">¡Ya recibimos tu pedido!</h2>
       <p style="color:var(--text-muted); font-size:13.5px; line-height:1.6; margin:0 0 16px;">
-        El equipo de Letbe te contactará muy pronto para confirmar disponibilidad, forma de pago y entrega. Guarda este folio para dar seguimiento.
+        El equipo de Letbe te contactará muy pronto para confirmar disponibilidad, forma de pago y entrega. Guarda este folio: con él puedes volver a Refacciones y usar "📦 Consultar mi pedido" para ver el estatus y, una vez validado tu pago, descargar tu factura.
       </p>
       <div style="background:var(--surface-2); border:1px dashed var(--yellow); border-radius:10px; padding:16px; text-align:center; margin-bottom:20px;">
         <div class="id-pill" style="font-size:20px; padding:8px 16px;">${id}</div>
