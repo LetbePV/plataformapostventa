@@ -295,10 +295,10 @@
 
   /* ---------- Acceso de staff (discreto) ----------
      Deliberadamente NO usa el estilo de los demás botones (sin píldora,
-     sin sombra, sin texto). Es solo un punto tenue en la esquina inferior
+     sin sombra, sin texto). Es solo un punto tenue en la esquina superior
      izquierda; casi invisible hasta que el cursor pasa encima. */
   .staff-fab{
-    position:fixed; bottom:14px; left:14px; z-index:90;
+    position:fixed; top:4px; left:4px; z-index:90;
     width:10px; height:10px; border-radius:50%;
     background:var(--text-faint); border:none; padding:0;
     opacity:0.22; cursor:pointer; transition:opacity .15s ease;
@@ -492,7 +492,7 @@
 <div id="help-modal-wrap"></div>
 <!-- Acceso de staff, discreto a propósito: no es un botón de navegación
      normal ni lleva texto/ícono que lo identifique como "Panel admin" o
-     "staff" — es un punto casi invisible en la esquina inferior izquierda,
+     "staff" — es un punto casi invisible en la esquina superior izquierda,
      visible en toda la app (incluida la versión incrustada en el sitio
      público) para que el equipo interno pueda llegar al login sin que un
      visitante casual note que existe. El acceso real sigue protegido por su
