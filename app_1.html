@@ -409,7 +409,7 @@
   .alert-info .meta{color:var(--text-muted); font-size:12px; margin-top:2px;}
   .alert-actions{display:flex; gap:8px; align-items:center;}
   .alert-actions a{color:var(--text); text-decoration:none;}
-  .alert-tabs{display:flex; gap:8px; margin-bottom:14px;}
+  .alert-tabs{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px;}
   .alert-tab{
     padding:7px 14px; border-radius:100px; font-size:12px; font-weight:800; cursor:pointer;
     border:1px solid var(--border); color:var(--text-muted); background:transparent;
@@ -725,18 +725,14 @@ const EMAILJS_TEMPLATE_ID_PAGO_GARANTIA = 'template_ikeplos';
 // envío semanal automático (ver supabase/functions/reporte-pagos-garantias).
 const EMAILJS_TEMPLATE_ID_REPORTE_PAGOS = 'template_yjhj2nl';
 
-// Plantilla para avisar a Cuentas por cobrar cuando un cliente sube su
-// comprobante de transferencia para pagar una solicitud de compra de
-// refacciones (pedido). Debe configurarse en el dashboard de EmailJS
-// (duplicar cualquier plantilla existente que use las mismas variables —
-// tipo_evento, nombre_cliente, codigo_cliente, modelo_moto,
-// telefono_cliente, detalle, fecha_evento — y cambiar:
-// To Email: cuentasporcobrar@zontesmexico.com
-// Cc: grefacciones@zontesmexico.com, almacen@ivo-dimao.com, gerenciapostventa@ivo-dimao.com
-// Mientras no se configure el ID real aquí, notifyComprobantePedido() no
-// envía nada (solo deja un aviso en consola) para no romper el flujo de
-// subida del comprobante.
-const EMAILJS_TEMPLATE_ID_COMPROBANTE_PEDIDO = 'template_comprobante_pedido';
+// Plantilla para avisar a Contabilidad (Cuentas por pagar) cuando un cliente
+// sube su comprobante de transferencia para pagar una solicitud de compra de
+// refacciones (pedido). Configurada en el dashboard de EmailJS con las
+// variables tipo_evento, nombre_cliente, codigo_cliente, telefono_cliente,
+// detalle, fecha_evento —
+// To Email: cuentasporpagar@zontesmexico.com
+// Cc: gerenciapostventa@ivo-dimao.com, contabilidadivo@ivo-dimao.com, almacen@zontesmexico.com, grefacciones@ivo-dimao.com
+const EMAILJS_TEMPLATE_ID_COMPROBANTE_PEDIDO = 'template_ncm3kg1';
 
 // Compara nombres de distribuidor ignorando acentos, mayúsculas y espacios
 // sobrantes, para que no falle por una tilde mal colocada al capturar el dato.
@@ -1250,6 +1246,20 @@ async function updateSolicitudCompra(id, fields){
     headers:{'Prefer':'return=representation'},
     body: JSON.stringify({ ...fields, updated_at: new Date().toISOString() }),
   });
+}
+// Consulta pública de un solo pedido por folio (usada por el cliente para dar
+// seguimiento a su pedido y, una vez que Contabilidad valida el pago y sube
+// la factura, para ver/descargar su factura). Devuelve null si no existe o
+// si hay un error de conexión (indistinguibles desde el punto de vista del
+// cliente: en ambos casos se le pide verificar el folio).
+async function getSolicitudCompra(id){
+  try{
+    const rows = await sbRequest('solicitudes_compra?id=eq.' + encodeURIComponent(id) + '&select=*', { method:'GET' });
+    return rows && rows.length ? rows[0] : null;
+  }catch(e){
+    console.error(e);
+    return null;
+  }
 }
 
 // Parsea un catálogo de refacciones (varias hojas F1, F2, ... por subsistema,
@@ -2018,6 +2028,56 @@ async function updateStaffContabilidadActivo(usuario, activo){
 // o desde el panel exclusivo de Contabilidad (mismo componente en ambos).
 async function updateStaffContabilidad(usuario, fields){
   const rows = await sbRequest('staff_contabilidad?usuario=eq.' + encodeURIComponent(usuario), {
+    method:'PATCH',
+    headers:{'Prefer':'return=representation'},
+    body: JSON.stringify(fields),
+  });
+  return (rows && rows[0]) || null;
+}
+
+/* ---- Cuentas de CRM (usuario + contraseña propios, acceso a un panel
+   exclusivo con la lista de clientes por contactar — servicios próximos a
+   vencer o ya vencidos — sin usar el código general de staff ni tener
+   acceso al resto del Panel administrativo). ---- */
+async function getAllStaffCRM(){
+  try{
+    const rows = await sbRequestAllPages('staff_crm?select=*&order=created_at.desc');
+    return rows;
+  }catch(e){ console.error(e); return null; }
+}
+async function getStaffCRM(usuario, password){
+  try{
+    const rows = await sbRequest('staff_crm?usuario=eq.' + encodeURIComponent(usuario) + '&select=*', { method:'GET' });
+    if(!rows || !rows.length) return { error: 'notfound' };
+    const s = rows[0];
+    if(!s.activo) return { error: 'inactive' };
+    if(s.password !== password) return { error: 'badpassword' };
+    return { staff: s };
+  }catch(e){
+    console.error(e);
+    const msg = (e && e.message) || '';
+    if(msg.includes("Could not find the table") || msg.includes('relation') || msg.includes('does not exist')){
+      return { error: 'connection', detail: 'La tabla "staff_crm" no existe todavía en Supabase. Corre el SQL de configuración antes de continuar.' };
+    }
+    return { error: 'connection', detail: msg };
+  }
+}
+async function createStaffCRM(s){
+  await sbRequest('staff_crm', {
+    method:'POST',
+    headers:{'Prefer':'return=representation'},
+    body: JSON.stringify(s),
+  });
+}
+async function updateStaffCRMActivo(usuario, activo){
+  await sbRequest('staff_crm?usuario=eq.' + encodeURIComponent(usuario), {
+    method:'PATCH',
+    headers:{'Prefer':'return=representation'},
+    body: JSON.stringify({ activo }),
+  });
+}
+async function updateStaffCRM(usuario, fields){
+  const rows = await sbRequest('staff_crm?usuario=eq.' + encodeURIComponent(usuario), {
     method:'PATCH',
     headers:{'Prefer':'return=representation'},
     body: JSON.stringify(fields),
@@ -6169,6 +6229,8 @@ function renderRefaccionesHub(){
 
   ${tallerLockCard()}
 
+  <button class="btn btn-ghost" id="consulta-pedido-btn" style="margin-bottom:24px;">📦 Consultar mi pedido</button>
+
   <div id="cotizador-result" style="margin-bottom:24px;"></div>
 
   <h3 style="font-family:'Archivo Black'; font-size:16px; margin:0 0 14px;">Catálogo por modelo</h3>
@@ -6179,6 +6241,7 @@ function bindRefaccionesHub(){
   document.getElementById('cot-buscar-btn').addEventListener('click', doCotizadorSearch);
   document.getElementById('cot-parte-input').addEventListener('keydown', e=>{ if(e.key==='Enter') doCotizadorSearch(); });
   bindTallerLockCard();
+  document.getElementById('consulta-pedido-btn').addEventListener('click', openConsultaPedidoModal);
   document.querySelectorAll('[data-open-modelo]').forEach(card=>{
     card.addEventListener('click', ()=>{
       state.refaccionesSub = 'modelo';
@@ -6186,6 +6249,76 @@ function bindRefaccionesHub(){
       render();
     });
   });
+}
+
+/* ---- Consulta pública de "Mi pedido" por folio: el cliente ve el estatus
+   de su pedido, si su comprobante ya fue recibido, si Contabilidad ya
+   validó el pago y, una vez que la factura ya fue subida, puede verla y
+   descargarla directamente desde aquí. ---- */
+function openConsultaPedidoModal(){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:520px;">
+      <div class="eyebrow">Seguimiento de pedido</div>
+      <h2 style="font-family:'Archivo Black'; font-size:20px; margin:0 0 6px;">Consulta tu pedido</h2>
+      <p style="color:var(--text-muted); font-size:12.5px; margin:0 0 16px;">Ingresa el folio que te dimos al hacer tu pedido para ver su estatus y, una vez lista, descargar tu factura.</p>
+      <div class="field" style="margin-bottom:14px;">
+        <label>Folio de tu pedido</label>
+        <input id="consulta-pedido-folio" class="mono" placeholder="PC-XXXXXX" style="text-transform:uppercase;">
+      </div>
+      <button class="btn btn-primary btn-block" id="consulta-pedido-buscar-btn">Buscar</button>
+      <p id="consulta-pedido-error" style="color:var(--danger); font-size:12.5px; margin-top:10px; display:none;"></p>
+      <div id="consulta-pedido-result" style="margin-top:18px;"></div>
+      <button type="button" class="btn btn-ghost btn-block" id="cerrar-consulta-pedido" style="margin-top:16px;">Cerrar</button>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', (e)=>{ if(e.target === overlay) overlay.remove(); });
+  overlay.querySelector('#cerrar-consulta-pedido').addEventListener('click', ()=> overlay.remove());
+
+  const folioInput = overlay.querySelector('#consulta-pedido-folio');
+  const errEl = overlay.querySelector('#consulta-pedido-error');
+  const resultEl = overlay.querySelector('#consulta-pedido-result');
+  const buscarBtn = overlay.querySelector('#consulta-pedido-buscar-btn');
+
+  const buscar = async ()=>{
+    const folio = folioInput.value.trim().toUpperCase();
+    errEl.style.display = 'none';
+    resultEl.innerHTML = '';
+    if(!folio) return;
+    buscarBtn.disabled = true; buscarBtn.textContent = 'Buscando...';
+    const p = await getSolicitudCompra(folio);
+    buscarBtn.disabled = false; buscarBtn.textContent = 'Buscar';
+    if(!p){
+      errEl.textContent = 'No encontramos ese folio. Verifica que esté completo e intenta de nuevo.';
+      errEl.style.display = 'block';
+      return;
+    }
+    const info = pedidoStatusInfo(p.status);
+    resultEl.innerHTML = `
+      <div class="card">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+          <div class="id-pill">${esc(p.id)}</div>
+          <span class="badge ${info.badge}">${info.label}</span>
+        </div>
+        <div style="margin-top:10px; font-size:12.5px;"><b>Total estimado:</b> ${fmtMoney(p.total_estimado)}</div>
+        <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
+          ${p.comprobante_transferencia_url
+            ? `<div style="font-size:12.5px; color:var(--success);">✓ Recibimos tu comprobante de transferencia${p.comprobante_fecha_envio ? ` el ${new Date(p.comprobante_fecha_envio).toLocaleString('es-MX')}` : ''}.</div>`
+            : `<div style="font-size:12.5px; color:var(--text-muted);">Aún no hemos recibido tu comprobante de transferencia.</div>`}
+          ${p.pago_validado
+            ? `<div style="font-size:12.5px; color:var(--success); margin-top:6px;">✓ Tu pago ya fue validado por Cuentas por cobrar.</div>`
+            : p.comprobante_transferencia_url ? `<div style="font-size:12.5px; color:var(--text-muted); margin-top:6px;">Tu comprobante está en revisión por Cuentas por cobrar.</div>` : ''}
+        </div>
+        ${p.factura_url ? `
+        <div style="margin-top:14px; background:var(--surface-2); border:1px solid var(--success); border-radius:10px; padding:14px 16px;">
+          <b style="color:var(--success); font-size:13px;">📄 Tu factura ya está lista${p.factura_numero ? ` (${esc(p.factura_numero)})` : ''}</b>
+          <div style="margin-top:10px;"><a href="${p.factura_url}" target="_blank" class="btn btn-primary btn-block">Ver y descargar factura</a></div>
+        </div>` : (p.pago_validado ? `<div style="margin-top:14px; font-size:12.5px; color:var(--text-muted);">Tu factura está por generarse. Vuelve a consultar tu folio en un rato.</div>` : '')}
+      </div>`;
+  };
+  buscarBtn.addEventListener('click', buscar);
+  folioInput.addEventListener('keydown', e => { if(e.key === 'Enter') buscar(); });
 }
 async function doCotizadorSearch(){
   const q = document.getElementById('cot-parte-input').value.trim();
@@ -6268,7 +6401,7 @@ function bankTransferInfoCard(){
       <b>Tipo de moneda:</b> Pesos
     </div>
     <p style="font-size:11.5px; color:var(--text-muted); margin-top:12px; margin-bottom:0;">
-      Contacto para confirmación de depósitos: <a href="mailto:cuentasporcobrar@zontesmexico.com" style="color:var(--yellow-ink);">cuentasporcobrar@zontesmexico.com</a>
+      Contacto para confirmación de depósitos: <a href="mailto:cuentasporpagar@zontesmexico.com" style="color:var(--yellow-ink);">cuentasporpagar@zontesmexico.com</a>
     </p>
   </div>`;
 }
@@ -6488,7 +6621,7 @@ function showPedidoConfirmModal(id, info){
       <div class="eyebrow">Solicitud enviada</div>
       <h2 style="font-family:'Archivo Black'; font-size:22px; margin:0 0 10px;">¡Ya recibimos tu pedido!</h2>
       <p style="color:var(--text-muted); font-size:13.5px; line-height:1.6; margin:0 0 16px;">
-        El equipo de Letbe te contactará muy pronto para confirmar disponibilidad, forma de pago y entrega. Guarda este folio para dar seguimiento.
+        El equipo de Letbe te contactará muy pronto para confirmar disponibilidad, forma de pago y entrega. Guarda este folio: con él puedes volver a Refacciones y usar "📦 Consultar mi pedido" para ver el estatus y, una vez validado tu pago, descargar tu factura.
       </p>
       <div style="background:var(--surface-2); border:1px dashed var(--yellow); border-radius:10px; padding:16px; text-align:center; margin-bottom:20px;">
         <div class="id-pill" style="font-size:20px; padding:8px 16px;">${id}</div>
@@ -6853,11 +6986,13 @@ function renderContabilidadStaffPanel(){
   <div class="alert-tabs" id="contabilidad-section-tabs" style="margin-bottom:20px;">
     <button class="alert-tab ${sub==='garantias'?'active':''}" data-sub="garantias">Pagos de garantías</button>
     <button class="alert-tab ${sub==='activaciones'?'active':''}" data-sub="activaciones">Pagos de activaciones</button>
+    <button class="alert-tab ${sub==='pedidos'?'active':''}" data-sub="pedidos">Validar pagos de Refacciones</button>
     <button class="alert-tab ${sub==='reportes'?'active':''}" data-sub="reportes">Reportes</button>
     <button class="alert-tab ${sub==='personal'?'active':''}" data-sub="personal">Personal</button>
   </div>
   <div id="contabilidad-content">
     ${sub === 'activaciones' ? renderPagosActivacionesSection({ showAccessManagement: false })
+      : sub === 'pedidos' ? renderValidacionPagosRefaccionesSection()
       : sub === 'reportes' ? renderReportesContabilidadSection()
       : sub === 'personal' ? `<div class="alert-section">${renderStaffContabilidadManagementBlock()}</div>`
       : renderPagosGarantiasSection()}
@@ -6881,6 +7016,9 @@ async function bindContabilidadStaffPanel(){
   if(sub === 'activaciones'){
     await loadPagosActivacionesAdmin();
     bindPagosActivacionesSection();
+  }else if(sub === 'pedidos'){
+    await loadValidacionPagosRefacciones();
+    bindValidacionPagosRefaccionesSection();
   }else if(sub === 'reportes'){
     await loadReportesContabilidadAdmin();
     bindReportesContabilidadSection();
@@ -6893,6 +7031,69 @@ async function bindContabilidadStaffPanel(){
   }
 }
 
+/* ---- Panel exclusivo de CRM (mismo patrón que el de Contabilidad): login
+   propio con usuario/contraseña individuales, y dentro, dos sub-pestañas —
+   "Seguimiento" reutiliza tal cual el mismo reporte de la pestaña CRM del
+   Panel admin general (renderCRMSection/loadCRMSection/renderCRMList/
+   exportCRMExcel), y "Personal" reutiliza el mismo bloque de administración
+   de cuentas de CRM que ya se usa desde Personal > CRM en el Panel admin
+   general (renderStaffCRMManagementBlock/loadStaffCRMAdmin). ---- */
+function renderCRMStaffPanel(){
+  const staff = state.crmStaffAuthed;
+  const sub = state.crmStaffSection || 'seguimiento';
+  return `
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; margin-bottom:8px;">
+    <div>
+      <div class="eyebrow">CRM · Panel de seguimiento</div>
+      <h1 class="page-title">CRM de Letbe</h1>
+      <p class="page-sub">Sesión de ${esc(staff.nombre || staff.usuario)}. Clientes con un servicio próximo a vencer o ya vencido, listos para contactar.</p>
+    </div>
+    <button class="btn btn-ghost btn-sm" id="crm-staff-logout">Cerrar sesión</button>
+  </div>
+  <div class="alert-tabs" id="crm-staff-section-tabs" style="margin-bottom:20px;">
+    <button class="alert-tab ${sub==='seguimiento'?'active':''}" data-sub="seguimiento">Seguimiento</button>
+    <button class="alert-tab ${sub==='personal'?'active':''}" data-sub="personal">Personal</button>
+  </div>
+  <div id="crm-staff-content">
+    ${sub === 'personal' ? `<div class="alert-section">${renderStaffCRMManagementBlock()}</div>` : renderCRMSection()}
+  </div>
+  `;
+}
+
+async function bindCRMStaffPanel(){
+  document.getElementById('crm-staff-logout').addEventListener('click', ()=>{
+    state.crmStaffAuthed = null;
+    state.adminLoginMode = null;
+    render();
+  });
+  document.querySelectorAll('#crm-staff-section-tabs .alert-tab').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      state.crmStaffSection = btn.dataset.sub;
+      render();
+    });
+  });
+  const sub = state.crmStaffSection || 'seguimiento';
+  if(sub === 'personal'){
+    await loadStaffCRMAdmin();
+    document.getElementById('staff-crm-add-btn').addEventListener('click', openAddStaffCRMModal);
+  }else{
+    state.crmTab = state.crmTab || 'all';
+    await loadCRMSection();
+    document.getElementById('crm-search').addEventListener('input', (e)=>{
+      state.crmSearch = e.target.value;
+      renderCRMList(window.__allCRMAlerts || []);
+    });
+    document.getElementById('crm-export-btn').addEventListener('click', exportCRMExcel);
+    document.querySelectorAll('#crm-tabs .alert-tab').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        state.crmTab = btn.dataset.tab;
+        document.querySelectorAll('#crm-tabs .alert-tab').forEach(b => b.classList.toggle('active', b===btn));
+        renderCRMList(window.__allCRMAlerts || []);
+      });
+    });
+  }
+}
+
 function renderAdmin(){
   if(state.jefeTallerAuthed){
     return renderJefeTallerStaffPanel();
@@ -6902,6 +7103,9 @@ function renderAdmin(){
   }
   if(state.contabilidadAuthed){
     return renderContabilidadStaffPanel();
+  }
+  if(state.crmStaffAuthed){
+    return renderCRMStaffPanel();
   }
   if(!state.adminAuthed){
     if(state.adminLoginMode === 'refacciones'){
@@ -6943,6 +7147,19 @@ function renderAdmin(){
         <button type="button" class="btn btn-ghost btn-block" id="contabilidad-back" style="margin-top:12px;">← Acceso general de staff</button>
       </div>`;
     }
+    if(state.adminLoginMode === 'crm'){
+      return `
+      <div class="eyebrow">Acceso restringido</div>
+      <h1 class="page-title">CRM · Acceso de staff</h1>
+      <p class="page-sub">Uso exclusivo del equipo de CRM: seguimiento de clientes con servicio próximo a vencer o vencido.</p>
+      <div class="card" style="max-width:400px;">
+        <div class="field"><label>Usuario</label><input id="crm-staff-user" class="mono" placeholder="usuario" autocomplete="off"></div>
+        <div class="field"><label>Contraseña</label><input id="crm-staff-pass" type="password" placeholder="••••••"></div>
+        <button class="btn btn-primary btn-block" id="crm-staff-login">Entrar</button>
+        <p id="crm-staff-error" style="color:var(--danger); font-size:12.5px; margin-top:10px; display:none;"></p>
+        <button type="button" class="btn btn-ghost btn-block" id="crm-staff-back" style="margin-top:12px;">← Acceso general de staff</button>
+      </div>`;
+    }
     return `
     <div class="eyebrow">Acceso restringido</div>
     <h1 class="page-title">Panel administrativo</h1>
@@ -6954,6 +7171,7 @@ function renderAdmin(){
       <button type="button" class="btn btn-ghost btn-block" id="ref-staff-switch" style="margin-top:14px;">🔧 Acceso del equipo de Refacciones</button>
       <button type="button" class="btn btn-ghost btn-block" id="jefe-taller-switch" style="margin-top:10px;">👷 Acceso del Jefe de taller</button>
       <button type="button" class="btn btn-ghost btn-block" id="contabilidad-switch" style="margin-top:10px;">💰 Acceso de Contabilidad</button>
+      <button type="button" class="btn btn-ghost btn-block" id="crm-staff-switch" style="margin-top:10px;">📇 Acceso de CRM</button>
     </div>`;
   }
   return `
@@ -6964,6 +7182,7 @@ function renderAdmin(){
   <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:28px;">
     <div class="alert-tabs" id="admin-section-tabs">
       <button class="alert-tab ${!state.adminSection||state.adminSection==='clientes'?'active':''}" data-section="clientes">Clientes</button>
+      <button class="alert-tab ${state.adminSection==='crm'?'active':''}" data-section="crm">CRM</button>
       <button class="alert-tab ${state.adminSection==='garantias'?'active':''}" data-section="garantias">Reporte de fallas</button>
       <button class="alert-tab ${state.adminSection==='garantias_taller'?'active':''}" data-section="garantias_taller">Garantías</button>
       <button class="alert-tab ${state.adminSection==='pagos_garantias'?'active':''}" data-section="pagos_garantias">Pagos de garantías</button>
@@ -7324,6 +7543,222 @@ function renderPagosGarantiasAdminList(items){
         toast('No se pudo guardar. Intenta de nuevo.', 'err');
       }
       btn.disabled = false; btn.textContent = 'Guardar notas';
+    });
+  });
+}
+
+/* ---- Pestaña "Validar pagos de Refacciones" del panel de Contabilidad:
+   pedidos del cotizador de Refacciones (solicitudes_compra) donde el
+   cliente ya subió su comprobante de transferencia. Contabilidad revisa el
+   depósito y, si es correcto, valida el pago — esto es lo que autoriza al
+   equipo de Refacciones a proceder con la venta (el badge "Pago validado"
+   aparece en la tarjeta del pedido tanto en este panel como en el Panel
+   admin general y en el panel de staff de Refacciones, ver
+   renderPedidosAdminList). No dispara ningún correo por ahora — es solo un
+   registro visible dentro de la app de quién validó y cuándo. ---- */
+function renderValidacionPagosRefaccionesSection(){
+  return `
+  <div class="alert-section">
+    <p style="color:var(--text-muted); font-size:12.5px; margin:0 0 14px;">Pedidos de Refacciones donde el cliente o taller ya subió su comprobante de transferencia. Revisa el depósito y valida el pago para autorizar al equipo de Refacciones a proceder con la venta.</p>
+    <div class="grid3" id="valida-pedido-stats" style="margin-bottom:20px;"></div>
+    <div class="alert-tabs" id="valida-pedido-tabs">
+      <button class="alert-tab ${(state.validaPedidoTab||'pendiente')==='pendiente'?'active':''}" data-tab="pendiente">Pendientes de validar</button>
+      <button class="alert-tab ${state.validaPedidoTab==='validado'?'active':''}" data-tab="validado">Validados</button>
+    </div>
+    <div id="valida-pedido-list"></div>
+  </div>
+  `;
+}
+
+async function loadValidacionPagosRefacciones(){
+  const items = await getAllSolicitudesCompra();
+  const container = document.getElementById('valida-pedido-list');
+  if(items === null){
+    if(container) container.innerHTML = `<div class="empty" style="color:var(--danger); padding:24px;">No se pudo conectar a la base de datos.</div>`;
+    window.__allPedidosConComprobante = [];
+    return;
+  }
+  const conComprobante = items.filter(p => p.comprobante_transferencia_url);
+  window.__allPedidosConComprobante = conComprobante;
+  const pendientes = conComprobante.filter(p => !p.pago_validado).length;
+  const validados = conComprobante.filter(p => p.pago_validado).length;
+  const statsEl = document.getElementById('valida-pedido-stats');
+  if(statsEl) statsEl.innerHTML = `
+    <div class="card"><div class="eyebrow">Con comprobante subido</div><div class="display" style="font-size:28px;">${conComprobante.length}</div></div>
+    <div class="card"><div class="eyebrow">Pendientes de validar</div><div class="display" style="font-size:28px; color:var(--danger);">${pendientes}</div></div>
+    <div class="card"><div class="eyebrow">Validados</div><div class="display" style="font-size:28px; color:var(--success);">${validados}</div></div>
+  `;
+  renderValidacionPagosRefaccionesList(conComprobante);
+}
+
+function renderValidacionPagosRefaccionesList(items){
+  const tab = state.validaPedidoTab || 'pendiente';
+  const filtered = items.filter(p => tab === 'validado' ? !!p.pago_validado : !p.pago_validado);
+  const container = document.getElementById('valida-pedido-list');
+  if(!container) return;
+  if(!filtered.length){
+    container.innerHTML = `<div class="empty" style="padding:24px;">Sin pedidos en esta categoría.</div>`;
+    return;
+  }
+  container.innerHTML = filtered.map(p => {
+    const validado = !!p.pago_validado;
+    return `
+    <div class="card" style="margin-bottom:12px; ${!validado ? 'border-left:3px solid var(--danger);' : ''}">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+        <div>
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <span class="id-pill">${esc(p.id)}</span>
+            <b style="font-size:13.5px;">${esc(p.nombre)}</b>
+            ${p.taller_id ? `<span class="badge badge-yellow">Taller: ${esc(p.taller_nombre)} (${esc(p.taller_id)})</span>` : ''}
+          </div>
+          <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">${esc(p.telefono || '')}${p.correo ? ` · ${esc(p.correo)}` : ''}</div>
+        </div>
+        <span class="badge ${validado ? 'badge-success' : 'badge-pending'}">${validado ? '✓ Pago validado' : 'Pendiente de validar'}</span>
+      </div>
+      <div style="margin-top:10px; font-size:12.5px;"><b>Total estimado:</b> ${fmtMoney(p.total_estimado)}</div>
+      ${p.direccion_envio ? `<div style="margin-top:6px; color:var(--text-muted); font-size:12.5px;"><b>Dirección de envío:</b> ${esc(p.direccion_envio)}${p.referencia ? ` · <b>Referencia:</b> ${esc(p.referencia)}` : ''}</div>` : ''}
+      <div style="margin-top:10px;">
+        <a href="${p.comprobante_transferencia_url}" target="_blank" class="btn btn-ghost btn-sm">🧾 Ver comprobante de transferencia</a>
+        <span style="color:var(--text-faint); font-size:11.5px;">${p.comprobante_fecha_envio ? `· enviado el ${new Date(p.comprobante_fecha_envio).toLocaleString('es-MX')}` : ''}</span>
+      </div>
+      ${validado ? `<div style="margin-top:10px; font-size:12px; color:var(--text-muted);">Validado por <b>${esc(p.pago_validado_por || '—')}</b> el ${p.pago_validado_fecha ? new Date(p.pago_validado_fecha).toLocaleString('es-MX') : '—'}</div>` : ''}
+      ${!validado ? `
+      <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
+        <div class="eyebrow" style="font-size:10px; margin-bottom:8px;">Factura</div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
+          <div class="field" style="flex:1; min-width:160px;"><label>N° de factura (opcional)</label><input type="text" class="factura-numero-input" data-pedido="${esc(p.id)}" placeholder="Ej. F-000123"></div>
+          <div class="field" style="flex:1; min-width:200px;"><label>Archivo de factura (PDF o imagen)</label><input type="file" accept="application/pdf,image/*" class="factura-file-input" data-pedido="${esc(p.id)}"></div>
+        </div>
+        <div style="margin-top:12px;">
+          <button class="btn btn-primary btn-sm" data-valida-pedido="${esc(p.id)}">✓ Validar pago y subir factura</button>
+        </div>
+      </div>
+      ` : `
+      <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
+        <div class="eyebrow" style="font-size:10px; margin-bottom:8px;">Factura</div>
+        ${p.factura_url
+          ? `<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+               <a href="${p.factura_url}" target="_blank" class="btn btn-ghost btn-sm">📄 Ver factura${p.factura_numero ? ` (${esc(p.factura_numero)})` : ''}</a>
+               <span style="color:var(--text-faint); font-size:11.5px;">${p.factura_fecha_subida ? `· subida el ${new Date(p.factura_fecha_subida).toLocaleString('es-MX')}` : ''}</span>
+             </div>
+             <div style="margin-top:10px;">
+               <button class="btn btn-ghost btn-sm factura-replace-btn" data-pedido="${esc(p.id)}">Reemplazar factura</button>
+             </div>
+             <div class="factura-upload-form" data-pedido="${esc(p.id)}" style="display:none; margin-top:10px; gap:8px; flex-wrap:wrap; align-items:flex-end;">
+               <div class="field" style="flex:1; min-width:160px;"><label>N° de factura (opcional)</label><input type="text" class="factura-numero-input" data-pedido="${esc(p.id)}" placeholder="Ej. F-000123" value="${esc(p.factura_numero || '')}"></div>
+               <div class="field" style="flex:1; min-width:200px;"><label>Archivo (PDF o imagen)</label><input type="file" accept="application/pdf,image/*" class="factura-file-input" data-pedido="${esc(p.id)}"></div>
+               <button class="btn btn-primary btn-sm factura-upload-btn" data-pedido="${esc(p.id)}">Subir factura</button>
+             </div>`
+          : `<div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
+               <div class="field" style="flex:1; min-width:160px;"><label>N° de factura (opcional)</label><input type="text" class="factura-numero-input" data-pedido="${esc(p.id)}" placeholder="Ej. F-000123"></div>
+               <div class="field" style="flex:1; min-width:200px;"><label>Archivo (PDF o imagen)</label><input type="file" accept="application/pdf,image/*" class="factura-file-input" data-pedido="${esc(p.id)}"></div>
+               <button class="btn btn-primary btn-sm factura-upload-btn" data-pedido="${esc(p.id)}">📄 Subir factura</button>
+             </div>`}
+      </div>
+      <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
+        <button class="btn btn-ghost btn-sm" data-quita-validacion="${esc(p.id)}">Quitar validación</button>
+      </div>
+      `}
+    </div>`;
+  }).join('');
+
+  container.querySelectorAll('[data-valida-pedido]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.validaPedido;
+      const fileInput = container.querySelector(`.factura-file-input[data-pedido="${CSS.escape(id)}"]`);
+      const numeroInput = container.querySelector(`.factura-numero-input[data-pedido="${CSS.escape(id)}"]`);
+      const file = fileInput && fileInput.files[0];
+      if(!file){
+        toast('Sube el archivo de la factura antes de validar el pago.', 'err');
+        return;
+      }
+      const staff = state.contabilidadAuthed;
+      const originalText = btn.textContent;
+      btn.disabled = true; btn.textContent = 'Guardando...';
+      try{
+        const facturaUrl = await uploadFile(file, `pedidos/facturas/${id}`);
+        await updateSolicitudCompra(id, {
+          pago_validado: true,
+          pago_validado_por: (staff && (staff.nombre || staff.usuario)) || '',
+          pago_validado_fecha: new Date().toISOString(),
+          factura_url: facturaUrl,
+          factura_numero: (numeroInput && numeroInput.value.trim()) || null,
+          factura_fecha_subida: new Date().toISOString(),
+        });
+        toast('Pago validado y factura subida. Venta autorizada para Refacciones.', 'ok');
+        await loadValidacionPagosRefacciones();
+      }catch(err){
+        console.error(err);
+        toast('No se pudo completar. Intenta de nuevo.', 'err');
+        btn.disabled = false; btn.textContent = originalText;
+      }
+    });
+  });
+
+  container.querySelectorAll('[data-quita-validacion]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.quitaValidacion;
+      btn.disabled = true; btn.textContent = 'Guardando...';
+      try{
+        await updateSolicitudCompra(id, {
+          pago_validado: false,
+          pago_validado_por: null,
+          pago_validado_fecha: null,
+        });
+        toast('Se quitó la validación del pago.', 'ok');
+        await loadValidacionPagosRefacciones();
+      }catch(err){
+        console.error(err);
+        toast('No se pudo actualizar. Intenta de nuevo.', 'err');
+        btn.disabled = false; btn.textContent = 'Quitar validación';
+      }
+    });
+  });
+
+  container.querySelectorAll('.factura-replace-btn').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const id = btn.dataset.pedido;
+      const form = container.querySelector(`.factura-upload-form[data-pedido="${CSS.escape(id)}"]`);
+      if(form) form.style.display = 'flex';
+    });
+  });
+
+  container.querySelectorAll('.factura-upload-btn').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.pedido;
+      const fileInput = container.querySelector(`.factura-file-input[data-pedido="${CSS.escape(id)}"]`);
+      const numeroInput = container.querySelector(`.factura-numero-input[data-pedido="${CSS.escape(id)}"]`);
+      const file = fileInput && fileInput.files[0];
+      if(!file){
+        toast('Selecciona el archivo de la factura antes de subirla.', 'err');
+        return;
+      }
+      const originalText = btn.textContent;
+      btn.disabled = true; btn.textContent = 'Subiendo...';
+      try{
+        const facturaUrl = await uploadFile(file, `pedidos/facturas/${id}`);
+        await updateSolicitudCompra(id, {
+          factura_url: facturaUrl,
+          factura_numero: (numeroInput && numeroInput.value.trim()) || null,
+          factura_fecha_subida: new Date().toISOString(),
+        });
+        toast('Factura subida correctamente.', 'ok');
+        await loadValidacionPagosRefacciones();
+      }catch(err){
+        console.error(err);
+        toast('No se pudo subir la factura. Intenta de nuevo.', 'err');
+        btn.disabled = false; btn.textContent = originalText;
+      }
+    });
+  });
+}
+
+function bindValidacionPagosRefaccionesSection(){
+  document.querySelectorAll('#valida-pedido-tabs .alert-tab').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      state.validaPedidoTab = btn.dataset.tab;
+      document.querySelectorAll('#valida-pedido-tabs .alert-tab').forEach(b => b.classList.toggle('active', b===btn));
+      renderValidacionPagosRefaccionesList(window.__allPedidosConComprobante || []);
     });
   });
 }
@@ -7981,6 +8416,205 @@ function showStaffContabilidadCredentialsModal(staff){
     </div>`;
   document.body.appendChild(overlay);
   overlay.querySelector('#close-staff-contabilidad-cred').addEventListener('click', ()=> overlay.remove());
+}
+
+/* ---- Cuentas del equipo de CRM (mismo patrón que Contabilidad/Refacciones):
+   tabla de accesos, alta, editar nombre, restablecer contraseña, dar de
+   baja/reactivar. Se usa tanto desde "Personal" en el Panel admin general
+   como desde el propio panel exclusivo de CRM (mismo componente en ambos,
+   igual que ya pasa con Contabilidad). ---- */
+function renderStaffCRMManagementBlock(){
+  return `
+    <div style="margin-bottom:28px; padding-bottom:24px; border-bottom:1px solid var(--border);">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+        <div>
+          <h3 style="font-family:'Archivo Black'; font-size:15px; margin:0 0 4px;">Accesos del equipo de CRM</h3>
+          <p style="color:var(--text-muted); font-size:12.5px; margin:0;">Usuario y contraseña propios para entrar al panel exclusivo de CRM y ver la lista de clientes por contactar, sin usar el código general de staff.</p>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="staff-crm-add-btn">+ Nuevo usuario</button>
+      </div>
+      <div class="card" style="padding:0; overflow:hidden;">
+        <div style="overflow-x:auto;">
+          <table><thead><tr><th>Usuario</th><th>Nombre</th><th>Contraseña</th><th>Estatus</th><th></th></tr></thead>
+          <tbody id="staff-crm-tbody"></tbody></table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function loadStaffCRMAdmin(){
+  return (async ()=>{
+    const tbody = document.getElementById('staff-crm-tbody');
+    if(!tbody) return;
+    const items = await getAllStaffCRM();
+    if(items === null){
+      tbody.innerHTML = `<tr><td colspan="5"><div class="empty">No se pudo conectar a la base de datos.</div></td></tr>`;
+      return;
+    }
+    window.__allStaffCRM = items;
+    tbody.innerHTML = items.length ? items.map(s => `
+      <tr>
+        <td class="mono">${esc(s.usuario)}</td>
+        <td>${esc(s.nombre || '—')}</td>
+        <td class="mono">${esc(s.password)}</td>
+        <td><span class="badge ${s.activo ? 'badge-success' : 'badge-danger'}">${s.activo ? 'Activo' : 'Dado de baja'}</span></td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-ghost btn-sm" data-edit-staff-crm="${esc(s.usuario)}">Editar</button>
+          <button class="btn btn-ghost btn-sm" data-reset-staff-crm="${esc(s.usuario)}">Restablecer contraseña</button>
+          <button class="btn btn-ghost btn-sm" data-toggle-staff-crm="${esc(s.usuario)}" data-activo="${s.activo}">${s.activo ? 'Dar de baja' : 'Reactivar'}</button>
+        </td>
+      </tr>
+    `).join('') : `<tr><td colspan="5"><div class="empty">Aún no hay usuarios de CRM registrados.</div></td></tr>`;
+
+    tbody.querySelectorAll('[data-toggle-staff-crm]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const usuario = btn.dataset.toggleStaffCrm;
+        const nuevoActivo = !(btn.dataset.activo === 'true');
+        btn.disabled = true;
+        try{
+          await updateStaffCRMActivo(usuario, nuevoActivo);
+          toast(nuevoActivo ? 'Usuario reactivado.' : 'Usuario dado de baja.', 'ok');
+          await loadStaffCRMAdmin();
+        }catch(err){
+          console.error(err);
+          toast('No se pudo actualizar el usuario.', 'err');
+          btn.disabled = false;
+        }
+      });
+    });
+
+    tbody.querySelectorAll('[data-edit-staff-crm]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const usuario = btn.dataset.editStaffCrm;
+        const staff = (window.__allStaffCRM || []).find(s => s.usuario === usuario);
+        if(staff) openEditStaffCRMModal(staff);
+      });
+    });
+
+    tbody.querySelectorAll('[data-reset-staff-crm]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const usuario = btn.dataset.resetStaffCrm;
+        btn.disabled = true;
+        try{
+          const nuevaPassword = genTallerPassword();
+          const staff = await updateStaffCRM(usuario, { password: nuevaPassword });
+          await loadStaffCRMAdmin();
+          showStaffCRMCredentialsModal(staff || { usuario, password: nuevaPassword });
+        }catch(err){
+          console.error(err);
+          toast('No se pudo restablecer la contraseña.', 'err');
+          btn.disabled = false;
+        }
+      });
+    });
+  })();
+}
+
+function openEditStaffCRMModal(staff){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="eyebrow">CRM</div>
+      <h2 style="font-family:'Archivo Black'; font-size:20px; margin:0 0 16px;">Editar ${esc(staff.usuario)}</h2>
+      <form id="staff-crm-edit-form">
+        <div class="field"><label>Nombre del colaborador</label><input required name="nombre" value="${esc(staff.nombre || '')}" placeholder="Ej. María García"></div>
+        <div style="display:flex; gap:10px; margin-top:6px;">
+          <button type="button" class="btn btn-ghost" id="cancel-staff-crm-edit" style="flex:1;">Cancelar</button>
+          <button type="submit" class="btn btn-primary" style="flex:1;">Guardar cambios</button>
+        </div>
+        <p id="staff-crm-edit-form-error" style="color:var(--danger); font-size:12.5px; margin-top:10px; display:none;"></p>
+      </form>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#cancel-staff-crm-edit').addEventListener('click', ()=> overlay.remove());
+  overlay.querySelector('#staff-crm-edit-form').addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const f = e.target;
+    const btn = f.querySelector('button[type=submit]');
+    const errEl = document.getElementById('staff-crm-edit-form-error');
+    errEl.style.display = 'none';
+    btn.disabled = true; btn.textContent = 'Guardando...';
+    try{
+      await updateStaffCRM(staff.usuario, { nombre: f.nombre.value.trim() });
+      overlay.remove();
+      toast('Usuario actualizado.', 'ok');
+      await loadStaffCRMAdmin();
+    }catch(err){
+      console.error(err);
+      errEl.textContent = 'No se pudo guardar el cambio.';
+      errEl.style.display = 'block';
+      btn.disabled = false; btn.textContent = 'Guardar cambios';
+    }
+  });
+}
+
+function openAddStaffCRMModal(){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="eyebrow">CRM</div>
+      <h2 style="font-family:'Archivo Black'; font-size:20px; margin:0 0 16px;">Nuevo usuario de CRM</h2>
+      <form id="staff-crm-form">
+        <div class="field"><label>Nombre del colaborador</label><input required name="nombre" placeholder="Ej. María García"></div>
+        <div class="field"><label>Usuario</label><input required name="usuario" class="mono" placeholder="Ej. maria.garcia" autocomplete="off"></div>
+        <p style="color:var(--text-faint); font-size:11.5px; margin:-6px 0 6px;">La contraseña se genera automáticamente y se muestra al guardar.</p>
+        <div style="display:flex; gap:10px; margin-top:6px;">
+          <button type="button" class="btn btn-ghost" id="cancel-staff-crm" style="flex:1;">Cancelar</button>
+          <button type="submit" class="btn btn-primary" style="flex:1;">Guardar usuario</button>
+        </div>
+        <p id="staff-crm-form-error" style="color:var(--danger); font-size:12.5px; margin-top:10px; display:none;"></p>
+      </form>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#cancel-staff-crm').addEventListener('click', ()=> overlay.remove());
+  overlay.querySelector('#staff-crm-form').addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const f = e.target;
+    const btn = f.querySelector('button[type=submit]');
+    const errEl = document.getElementById('staff-crm-form-error');
+    errEl.style.display = 'none';
+    const usuario = f.usuario.value.trim().toLowerCase();
+    if(!usuario){ return; }
+    btn.disabled = true; btn.textContent = 'Guardando...';
+    try{
+      const staff = {
+        usuario,
+        nombre: f.nombre.value.trim(),
+        password: genTallerPassword(),
+        activo: true,
+      };
+      await createStaffCRM(staff);
+      overlay.remove();
+      await loadStaffCRMAdmin();
+      showStaffCRMCredentialsModal(staff);
+    }catch(err){
+      console.error(err);
+      errEl.textContent = 'No se pudo guardar el usuario. Puede que ya exista ese usuario.';
+      errEl.style.display = 'block';
+      btn.disabled = false; btn.textContent = 'Guardar usuario';
+    }
+  });
+}
+
+function showStaffCRMCredentialsModal(staff){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="eyebrow">Usuario registrado</div>
+      <h2 style="font-family:'Archivo Black'; font-size:20px; margin:0 0 10px;">Comparte estos accesos</h2>
+      <p style="color:var(--text-muted); font-size:13px; margin:0 0 16px;">${esc(staff.nombre || staff.usuario)} ya puede entrar al panel de "CRM" con estos datos:</p>
+      <div style="background:var(--surface-2); border:1px dashed var(--yellow); border-radius:10px; padding:16px; margin-bottom:20px;">
+        <div style="margin-bottom:8px;"><span style="color:var(--text-muted); font-size:12px;">Usuario</span><br><span class="id-pill" style="font-size:16px;">${esc(staff.usuario)}</span></div>
+        <div><span style="color:var(--text-muted); font-size:12px;">Contraseña</span><br><span class="id-pill" style="font-size:16px;">${esc(staff.password)}</span></div>
+      </div>
+      <button class="btn btn-primary btn-block" id="close-staff-crm-cred">Entendido</button>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#close-staff-crm-cred').addEventListener('click', ()=> overlay.remove());
 }
 
 // Ata los tabs de filtro y los botones (Excel / enviar reporte) de la sección
@@ -8697,6 +9331,7 @@ function renderPersonalAdminSection(){
   const sub = state.personalSubTab || 'tecnicos';
   const blockHtml = sub === 'refacciones' ? renderStaffRefaccionesManagementBlock()
     : sub === 'contabilidad' ? renderStaffContabilidadManagementBlock()
+    : sub === 'crm' ? renderStaffCRMManagementBlock()
     : renderStaffTecnicosManagementBlock();
   return `
   <div class="alert-section">
@@ -8705,6 +9340,7 @@ function renderPersonalAdminSection(){
       <button class="alert-tab ${sub==='tecnicos'?'active':''}" data-sub="tecnicos">Técnicos</button>
       <button class="alert-tab ${sub==='refacciones'?'active':''}" data-sub="refacciones">Refacciones</button>
       <button class="alert-tab ${sub==='contabilidad'?'active':''}" data-sub="contabilidad">Contabilidad</button>
+      <button class="alert-tab ${sub==='crm'?'active':''}" data-sub="crm">CRM</button>
     </div>
     <div id="personal-sub-content">${blockHtml}</div>
   </div>
@@ -8721,6 +9357,10 @@ async function loadPersonalSubTabData(){
     await loadStaffContabilidadAdmin();
     const btn = document.getElementById('staff-contabilidad-add-btn');
     if(btn) btn.addEventListener('click', openAddStaffContabilidadModal);
+  }else if(sub === 'crm'){
+    await loadStaffCRMAdmin();
+    const btn = document.getElementById('staff-crm-add-btn');
+    if(btn) btn.addEventListener('click', openAddStaffCRMModal);
   }else{
     await loadStaffTecnicosAdmin();
     const btn = document.getElementById('staff-tecnico-add-btn');
@@ -8736,6 +9376,7 @@ function bindPersonalAdminSection(){
       const content = document.getElementById('personal-sub-content');
       content.innerHTML = state.personalSubTab === 'refacciones' ? renderStaffRefaccionesManagementBlock()
         : state.personalSubTab === 'contabilidad' ? renderStaffContabilidadManagementBlock()
+        : state.personalSubTab === 'crm' ? renderStaffCRMManagementBlock()
         : renderStaffTecnicosManagementBlock();
       loadPersonalSubTabData();
     });
@@ -8870,6 +9511,12 @@ async function exportPedidosExcel(){
       'Notas internas': p.admin_notes || '',
       'Comprobante de transferencia': p.comprobante_transferencia_url || '',
       'Fecha de envío del comprobante': (p.comprobante_fecha_envio || '').slice(0,10),
+      'Pago validado': p.pago_validado ? 'Sí' : 'No',
+      'Validado por': p.pago_validado_por || '',
+      'Fecha de validación': (p.pago_validado_fecha || '').slice(0,10),
+      'Factura subida': p.factura_url ? 'Sí' : 'No',
+      'N° de factura': p.factura_numero || '',
+      'Fecha de factura': (p.factura_fecha_subida || '').slice(0,10),
       'Fecha de solicitud': (p.created_at || '').slice(0,10),
       'Última actualización': (p.updated_at || '').slice(0,10),
     }));
@@ -8930,8 +9577,20 @@ function renderPedidosAdminList(items){
       ${p.direccion_envio ? `<div style="margin-top:10px; color:var(--text-muted); font-size:12.5px;"><b>Dirección de envío:</b> ${esc(p.direccion_envio)}${p.referencia ? ` · <b>Referencia:</b> ${esc(p.referencia)}` : ''}</div>` : ''}
       ${p.notas ? `<div style="margin-top:6px; color:var(--text-muted); font-size:12.5px;"><b>Notas del cliente:</b> ${esc(p.notas)}</div>` : ''}
       ${p.comprobante_transferencia_url
-        ? `<div style="margin-top:10px;"><a href="${p.comprobante_transferencia_url}" target="_blank" class="btn btn-ghost btn-sm">🧾 Ver comprobante de transferencia</a> <span style="color:var(--text-faint); font-size:11.5px;">${p.comprobante_fecha_envio ? `· enviado el ${new Date(p.comprobante_fecha_envio).toLocaleString('es-MX')}` : ''}</span></div>`
+        ? `<div style="margin-top:10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+             <a href="${p.comprobante_transferencia_url}" target="_blank" class="btn btn-ghost btn-sm">🧾 Ver comprobante de transferencia</a>
+             <span style="color:var(--text-faint); font-size:11.5px;">${p.comprobante_fecha_envio ? `· enviado el ${new Date(p.comprobante_fecha_envio).toLocaleString('es-MX')}` : ''}</span>
+             ${p.pago_validado
+               ? `<span class="badge badge-success">✓ Pago validado${p.pago_validado_por ? ' · ' + esc(p.pago_validado_por) : ''}</span>`
+               : `<span class="badge badge-pending">Pendiente de validar por Contabilidad</span>`}
+           </div>`
         : `<div style="margin-top:10px; color:var(--text-faint); font-size:12px;">Aún no sube comprobante de transferencia.</div>`}
+      ${p.factura_url
+        ? `<div style="margin-top:8px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+             <a href="${p.factura_url}" target="_blank" class="btn btn-ghost btn-sm">📄 Ver factura${p.factura_numero ? ` (${esc(p.factura_numero)})` : ''}</a>
+             <span style="color:var(--text-faint); font-size:11.5px;">${p.factura_fecha_subida ? `· subida el ${new Date(p.factura_fecha_subida).toLocaleString('es-MX')}` : ''}</span>
+           </div>`
+        : ''}
       <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
         <div class="field" style="margin-bottom:10px;">
           <label>Notas internas de seguimiento</label>
@@ -10966,6 +11625,12 @@ async function exportExcelReport(){
       'Notas internas': p.admin_notes || '',
       'Comprobante de transferencia': p.comprobante_transferencia_url || '',
       'Fecha de envío del comprobante': (p.comprobante_fecha_envio || '').slice(0,10),
+      'Pago validado': p.pago_validado ? 'Sí' : 'No',
+      'Validado por': p.pago_validado_por || '',
+      'Fecha de validación': (p.pago_validado_fecha || '').slice(0,10),
+      'Factura subida': p.factura_url ? 'Sí' : 'No',
+      'N° de factura': p.factura_numero || '',
+      'Fecha de factura': (p.factura_fecha_subida || '').slice(0,10),
       'Fecha de solicitud': (p.created_at || '').slice(0,10),
       'Última actualización': (p.updated_at || '').slice(0,10),
     }));
@@ -11081,6 +11746,36 @@ async function bindAdmin(){
       });
       return;
     }
+    if(state.adminLoginMode === 'crm'){
+      const go = async ()=>{
+        const usuario = document.getElementById('crm-staff-user').value.trim().toLowerCase();
+        const pass = document.getElementById('crm-staff-pass').value;
+        const errEl = document.getElementById('crm-staff-error');
+        errEl.style.display = 'none';
+        if(!usuario || !pass) return;
+        const result = await getStaffCRM(usuario, pass);
+        if(result.error){
+          const msgs = {
+            notfound: 'No encontramos ese usuario.',
+            inactive: 'Este usuario fue dado de baja. Contacta a tu administrador.',
+            badpassword: 'Contraseña incorrecta.',
+            connection: result.detail || 'No se pudo conectar. Revisa tu conexión a internet.',
+          };
+          errEl.textContent = msgs[result.error] || 'Error desconocido.';
+          errEl.style.display = 'block';
+          return;
+        }
+        state.crmStaffAuthed = result.staff;
+        render();
+      };
+      document.getElementById('crm-staff-login').addEventListener('click', go);
+      document.getElementById('crm-staff-pass').addEventListener('keydown', e=>{ if(e.key==='Enter') go(); });
+      document.getElementById('crm-staff-back').addEventListener('click', ()=>{
+        state.adminLoginMode = 'general';
+        render();
+      });
+      return;
+    }
     document.getElementById('admin-login').addEventListener('click', ()=>{
       const val = document.getElementById('admin-pass').value;
       if(val === 'BEJ9-AX7U-7FY8'){
@@ -11100,6 +11795,10 @@ async function bindAdmin(){
     });
     document.getElementById('contabilidad-switch').addEventListener('click', ()=>{
       state.adminLoginMode = 'contabilidad';
+      render();
+    });
+    document.getElementById('crm-staff-switch').addEventListener('click', ()=>{
+      state.adminLoginMode = 'crm';
       render();
     });
     return;
@@ -11337,6 +12036,22 @@ async function renderAdminSectionContent(){
     content.innerHTML = renderPersonalAdminSection();
     bindPersonalAdminSection();
     await loadPersonalSubTabData();
+  }else if(state.adminSection === 'crm'){
+    content.innerHTML = renderCRMSection();
+    state.crmTab = state.crmTab || 'all';
+    await loadCRMSection();
+    document.getElementById('crm-search').addEventListener('input', (e)=>{
+      state.crmSearch = e.target.value;
+      renderCRMList(window.__allCRMAlerts || []);
+    });
+    document.getElementById('crm-export-btn').addEventListener('click', exportCRMExcel);
+    document.querySelectorAll('#crm-tabs .alert-tab').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        state.crmTab = btn.dataset.tab;
+        document.querySelectorAll('#crm-tabs .alert-tab').forEach(b => b.classList.toggle('active', b===btn));
+        renderCRMList(window.__allCRMAlerts || []);
+      });
+    });
   }else{
     content.innerHTML = renderClientesSection();
     state.alertTab = state.alertTab || 'all';
@@ -11404,6 +12119,151 @@ function renderAlertsList(alerts){
       </div>
     </div>`;
   }).join('');
+}
+
+/* ---- CRM: clientes a los que ya les toca su próximo servicio o ya lo
+   tienen vencido, con sus datos de contacto a la vista, para que el equipo
+   pueda darles seguimiento y agendar su cita. Reutiliza el mismo cálculo de
+   vencimiento que las alertas de la pestaña Clientes (computeServiceStatus),
+   pero en su propio apartado, pensado para trabajar una lista de contacto:
+   teléfono/correo visibles sin tener que entrar al detalle de cada cliente,
+   buscador, y un Excel exportable listo para hacer llamadas. ---- */
+function renderCRMSection(){
+  return `
+  <div class="alert-section">
+    <h3 style="font-family:'Archivo Black'; font-size:16px; margin:0 0 4px;">CRM · Clientes por contactar</h3>
+    <p style="color:var(--text-muted); font-size:12.5px; margin:0 0 14px;">Clientes con un servicio próximo a vencer o ya vencido (ventana de aviso: ${ALERT_WINDOW_DAYS} días antes del vencimiento), con sus datos de contacto listos para llamarles o escribirles.</p>
+    <div class="grid3" id="crm-stats" style="margin-bottom:20px;"></div>
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px;">
+      <div class="alert-tabs" id="crm-tabs">
+        <button class="alert-tab active" data-tab="all">Todos</button>
+        <button class="alert-tab" data-tab="overdue">Vencidos</button>
+        <button class="alert-tab" data-tab="soon">Próximos</button>
+      </div>
+      <button class="btn btn-ghost btn-sm" id="crm-export-btn">📞 Exportar lista de contacto</button>
+    </div>
+    <div class="card" style="margin-bottom:18px;">
+      <div class="field" style="margin-bottom:0;">
+        <label>Buscar por nombre, teléfono, correo o modelo</label>
+        <input id="crm-search" placeholder="Escribe para filtrar...">
+      </div>
+    </div>
+    <div id="crm-list"></div>
+  </div>
+  `;
+}
+
+async function loadCRMSection(){
+  const customers = await getAllCustomers();
+  const statsEl = document.getElementById('crm-stats');
+  if(customers === null){
+    document.getElementById('crm-list').innerHTML = `<div class="empty" style="padding:24px; color:var(--danger);">No se pudo conectar a la base de datos. Verifica tu conexión a internet.</div>`;
+    window.__allCRMAlerts = [];
+    return;
+  }
+  const alerts = [];
+  for(const c of customers){
+    for(const s of c.services){
+      if(s.done) continue;
+      const st = computeServiceStatus(s, c.purchaseDate);
+      if(st.status === 'overdue' || st.status === 'soon'){
+        alerts.push({customer:c, service:s, ...st});
+      }
+    }
+  }
+  alerts.sort((a,b)=> a.diff - b.diff); // más vencido / más próximo primero
+  window.__allCRMAlerts = alerts;
+  if(statsEl) statsEl.innerHTML = `
+    <div class="card"><div class="eyebrow">Total por contactar</div><div class="display" style="font-size:28px;">${alerts.length}</div></div>
+    <div class="card"><div class="eyebrow">Vencidos</div><div class="display" style="font-size:28px; color:var(--danger);">${alerts.filter(a=>a.status==='overdue').length}</div></div>
+    <div class="card"><div class="eyebrow">Próximos a vencer</div><div class="display" style="font-size:28px; color:var(--yellow-ink);">${alerts.filter(a=>a.status==='soon').length}</div></div>
+  `;
+  renderCRMList(alerts);
+}
+
+function renderCRMList(alerts){
+  const tab = state.crmTab || 'all';
+  const q = (state.crmSearch || '').trim().toLowerCase();
+  const filtered = alerts.filter(a=>{
+    if(tab !== 'all' && a.status !== tab) return false;
+    if(!q) return true;
+    const c = a.customer;
+    return (c.name||'').toLowerCase().includes(q) ||
+           (c.phone||'').toLowerCase().includes(q) ||
+           (c.email||'').toLowerCase().includes(q) ||
+           (c.model||'').toLowerCase().includes(q) ||
+           (c.id||'').toLowerCase().includes(q);
+  });
+  const container = document.getElementById('crm-list');
+  if(!container) return;
+  if(!filtered.length){
+    container.innerHTML = `<div class="empty" style="padding:24px;">Sin clientes por contactar en esta categoría. 🎉</div>`;
+    return;
+  }
+  container.innerHTML = filtered.map(a=>{
+    const c = a.customer;
+    const isOverdue = a.status === 'overdue';
+    const dueStr = fmtDate(a.due.toISOString().slice(0,10));
+    const badge = isOverdue
+      ? `<span class="badge badge-danger">Vencido hace ${Math.abs(a.diff)} día${Math.abs(a.diff)===1?'':'s'}</span>`
+      : `<span class="badge badge-yellow">Vence en ${a.diff} día${a.diff===1?'':'s'}</span>`;
+    return `
+    <div class="card" style="margin-bottom:12px; ${isOverdue ? 'border-left:3px solid var(--danger);' : ''}">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+        <div>
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <span class="id-pill">${esc(c.id)}</span>
+            <b style="font-size:13.5px;">${esc(c.name)}</b>
+            <span style="color:var(--text-muted); font-size:12px;">${esc(c.model)}</span>
+          </div>
+          <div style="font-size:12.5px; color:var(--text-muted); margin-top:4px;">
+            📞 ${esc(c.phone) || '—'}${c.email ? ` · ✉️ ${esc(c.email)}` : ''}
+          </div>
+        </div>
+        ${badge}
+      </div>
+      <div style="margin-top:10px; font-size:12.5px;">Servicio ${a.service.n} · programado a los ${a.service.months} meses · fecha estimada ${dueStr}</div>
+      <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border); display:flex; gap:8px; flex-wrap:wrap;">
+        <a href="tel:${esc(c.phone)}" class="btn btn-ghost btn-sm">📞 Llamar</a>
+        <a href="mailto:${esc(c.email)}" class="btn btn-ghost btn-sm">✉️ Correo</a>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function exportCRMExcel(){
+  const btn = document.getElementById('crm-export-btn');
+  const originalText = btn ? btn.textContent : '';
+  if(btn){ btn.disabled = true; btn.textContent = 'Generando...'; }
+  try{
+    const alerts = window.__allCRMAlerts || [];
+    const rows = alerts.map(a=>{
+      const c = a.customer;
+      return {
+        'Código': c.id,
+        'Nombre': c.name,
+        'Teléfono': c.phone,
+        'Correo': c.email,
+        'Modelo': c.model,
+        'Ciudad': c.address ? (c.address.ciudad || '') : '',
+        'Estado': c.address ? (c.address.estado || '') : '',
+        'N° de servicio': a.service.n,
+        'Estatus': a.status === 'overdue' ? 'Vencido' : 'Próximo a vencer',
+        'Días': a.status === 'overdue' ? `Vencido hace ${Math.abs(a.diff)}` : `Vence en ${a.diff}`,
+        'Fecha estimada': a.due ? a.due.toISOString().slice(0,10) : '',
+      };
+    });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, xlsxSheetOrPlaceholder(rows, 'Sin clientes por contactar por ahora.'), 'CRM - Por contactar');
+    const filename = `Letbe_CRM_Por_Contactar_${new Date().toISOString().slice(0,10)}.xlsx`;
+    XLSX.writeFile(wb, filename);
+    toast('Lista de contacto generada.', 'ok');
+  }catch(err){
+    console.error(err);
+    toast('No se pudo generar el reporte.', 'err');
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = originalText; }
+  }
 }
 
 async function loadClaimsAdmin(){
@@ -11584,6 +12444,9 @@ async function render(){
     }else if(state.contabilidadAuthed){
       main.innerHTML = renderContabilidadStaffPanel();
       await bindContabilidadStaffPanel();
+    }else if(state.crmStaffAuthed){
+      main.innerHTML = renderCRMStaffPanel();
+      await bindCRMStaffPanel();
     }else{
       main.innerHTML = renderAdmin();
       await bindAdmin();
@@ -11678,6 +12541,9 @@ function currentHelpManual(){
   }
   if(state.view === 'admin' && state.jefeTallerAuthed){
     return { file: 'manual-jefe-taller.html', label: 'Jefe de taller' };
+  }
+  if(state.view === 'admin' && state.crmStaffAuthed){
+    return { file: 'manual-admin.html', label: 'Panel admin' };
   }
   return HELP_MANUALS[state.view] || HELP_MANUALS.registro;
 }
