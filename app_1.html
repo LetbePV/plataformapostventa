@@ -554,14 +554,22 @@ function nextTier(count){
   return TIERS.find(t => count < t.min) || null;
 }
 
-/* ---- Precios por modelo (Tabla de precios de servicios kilometrados 2026) ---- */
+/* ---- Precios por modelo (Tabla de precios de servicios kilometrados 2026 — actualizado septiembre 2026, versión corregida) ----
+   Fuente: "Precios de Servicios Preventivos LETBE Septiembre.xlsx" (versión corregida), hoja "Cuadro de precios".
+   Excepciones (se usó el total de la hoja "Paquetes desglose" porque no cuadraba con
+   "Cuadro de precios" en el archivo — mismo criterio ya confirmado con el equipo de Letbe
+   en la versión anterior de este archivo):
+     - Island 150, servicio 11 (30,000 km): 1858.86 (Cuadro de precios decía 3118.86)
+     - Flygon 250, servicio 1 (1,000 km): 1846.58 (Cuadro de precios decía 1068.86)
+     - Flygon 250, servicio 10 (27,000 km): 3192.58 (Cuadro de precios decía 2956.58)
+*/
 const SERVICE_PRICES = {
-  'Neón 125':   [821.60, 821.60, 1441.60, 1931.81, 1151.60, 1687.60, 1151.60, 1971.81, 1151.60, 1001.60, 1837.60, 1641.21],
-  'Island 150': [821.60, 821.60, 1441.60, 1931.81, 1151.60, 1687.60, 1151.60, 2261.81, 1151.60, 1001.60, 1837.60, 1641.81],
-  'Mecha 200':  [821.60, 821.60, 1441.60, 1931.81, 1151.60, 1687.60, 1151.60, 2261.81, 1151.60, 1001.60, 1837.60, 1641.81],
-  'Flygon 250': [1051.60, 1051.60, 1961.60, 2161.81, 1381.60, 1347.60, 1371.60, 2161.81, 1381.60, 1231.60, 1661.60, 1871.81],
-  'Punk 500':   [1899.80, 1899.80, 2942.32, 4739.80, 2362.32, 2079.80, 2652.32, 4739.80, 2362.32, 2079.80, 3222.32, 4449.80],
-  'Arthur 700': [1899.80, 1899.80, 2942.32, 4739.80, 2079.80, 2079.80, 2652.32, 4739.80, 2362.32, 2079.80, 3222.32, 4449.80],
+  'Neón 125':   [1068.86, 2148.86, 1568.86, 2528.86, 1918.86, 2358.86, 1568.86, 2738.86, 5228.86, 2094.86, 1858.86, 3118.86],
+  'Island 150': [1068.86, 1568.86, 1568.86, 2528.86, 1918.86, 2358.86, 1568.86, 2738.86, 5228.86, 2094.86, 1858.86, 3118.86],
+  'Mecha 200':  [1068.86, 1568.86, 1568.86, 2528.86, 1918.86, 2358.86, 1568.86, 2738.86, 4358.86, 2094.86, 1858.86, 3118.86],
+  'Flygon 250': [1846.58, 2346.58, 2666.58, 4096.58, 3366.58, 2956.58, 2666.58, 4306.58, 2956.58, 3192.58, 2956.58, 4186.58],
+  'Punk 500':   [2166.58, 3096.58, 3096.58, 4757.44, 4167.44, 3096.58, 3096.58, 5397.44, 3096.58, 3332.58, 3096.58, 5277.44],
+  'Arthur 700': [2166.58, 3096.58, 3096.58, 4757.44, 4167.44, 3096.58, 3096.58, 5397.44, 3096.58, 3332.58, 3096.58, 5277.44],
 };
 function priceFor(model, n){
   const arr = SERVICE_PRICES[model];
@@ -603,6 +611,110 @@ const SERVICE_ITEMS = [
 ];
 function itemsForService(n){
   return SERVICE_ITEMS.filter(it => it.v[n-1]).map(it => ({ name: it.name, action: it.v[n-1] }));
+}
+
+/* ---- Desglose de refacciones y mano de obra por paquete de servicio (para Talleres) ----
+   Fuente: "Precios de Servicios Preventivos LETBE Septiembre.xlsx" (version corregida), hoja "Paquetes desglose"
+   (actualizado septiembre 2026). El renglón "Mano de obra" ya combina la mano de obra fija listada en
+   el paquete original con la mano de obra variable calculada por tiempo (Precio unitario MO x Tiempo),
+   para mostrarse como una sola línea. "diversos" es un cargo fijo de insumos varios que se suma al
+   total del paquete, además de las refacciones y la mano de obra listadas en "items".
+   Excepciones (se usó el total de la hoja "Paquetes desglose" porque no cuadraba con
+   "Cuadro de precios" en el archivo original — mismo criterio ya confirmado con el equipo de Letbe
+   en la versión anterior de este archivo):
+     - Island 150, servicio 11 (30,000 km): 1858.86 (Cuadro de precios decía 3118.86)
+     - Flygon 250, servicio 1 (1,000 km): 1846.58 (Cuadro de precios decía 1068.86)
+     - Flygon 250, servicio 10 (27,000 km): 3192.58 (Cuadro de precios decía 2956.58)
+*/
+const SERVICE_PACKAGE_BREAKDOWN = {
+  "Neón 125": [
+    { km:1000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Mano de obra", p:580, q:1}], diversos:100, total:1068.86 },
+    { km:3000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Mano de obra", p:1450, q:1}], diversos:100, total:2148.86 },
+    { km:6000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Mano de obra", p:870, q:1}], diversos:100, total:1568.86 },
+    { km:9000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Bujía", p:350, q:1}, {n:"Líquido de frenos", p:120, q:1}, {n:"Anticongelante", p:120, q:1}, {n:"Mano de obra", p:1450, q:1}], diversos:100, total:2528.86 },
+    { km:12000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Bujía", p:350, q:1}, {n:"Mano de obra", p:870, q:1}], diversos:100, total:1918.86 },
+    { km:15000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Aceite de engranajes reductor", p:500, q:1}, {n:"Mano de obra", p:1160, q:1}], diversos:100, total:2358.86 },
+    { km:18000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Mano de obra", p:870, q:1}], diversos:100, total:1568.86 },
+    { km:21000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Bujía", p:350, q:1}, {n:"Líquido de frenos", p:120, q:1}, {n:"Anticongelante", p:120, q:1}, {n:"Mano de obra", p:1450, q:1}], diversos:100, total:2738.86 },
+    { km:24000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Correa de transmisión", p:2500, q:1}, {n:"Mano de obra", p:2030, q:1}], diversos:100, total:5228.86 },
+    { km:27000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Líquido de frenos", p:120, q:1}, {n:"Mano de obra", p:1276, q:1}], diversos:100, total:2094.86 },
+    { km:30000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Mano de obra", p:1160, q:1}], diversos:100, total:1858.86 },
+    { km:33000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Bujía", p:350, q:1}, {n:"Aceite de engranajes reductor", p:500, q:1}, {n:"Anticongelante", p:120, q:1}, {n:"Mano de obra", p:1450, q:1}], diversos:100, total:3118.86 },
+  ],
+  "Island 150": [
+    { km:1000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Mano de obra", p:580, q:1}], diversos:100, total:1068.86 },
+    { km:3000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Mano de obra", p:870, q:1}], diversos:100, total:1568.86 },
+    { km:6000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Mano de obra", p:870, q:1}], diversos:100, total:1568.86 },
+    { km:9000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Bujía", p:350, q:1}, {n:"Líquido de frenos", p:120, q:1}, {n:"Anticongelante", p:120, q:1}, {n:"Mano de obra", p:1450, q:1}], diversos:100, total:2528.86 },
+    { km:12000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Bujía", p:350, q:1}, {n:"Mano de obra", p:870, q:1}], diversos:100, total:1918.86 },
+    { km:15000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Aceite de engranajes reductor", p:500, q:1}, {n:"Mano de obra", p:1160, q:1}], diversos:100, total:2358.86 },
+    { km:18000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Mano de obra", p:870, q:1}], diversos:100, total:1568.86 },
+    { km:21000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Bujía", p:350, q:1}, {n:"Líquido de frenos", p:120, q:1}, {n:"Anticongelante", p:120, q:1}, {n:"Mano de obra", p:1450, q:1}], diversos:100, total:2738.86 },
+    { km:24000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Correa de transmisión", p:2500, q:1}, {n:"Mano de obra", p:2030, q:1}], diversos:100, total:5228.86 },
+    { km:27000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Líquido de frenos", p:120, q:1}, {n:"Mano de obra", p:1276, q:1}], diversos:100, total:2094.86 },
+    { km:30000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Mano de obra", p:1160, q:1}], diversos:100, total:1858.86 },
+    { km:33000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Bujía", p:350, q:1}, {n:"Aceite de engranajes reductor", p:500, q:1}, {n:"Anticongelante", p:120, q:1}, {n:"Mano de obra", p:1450, q:1}], diversos:100, total:3118.86 },
+  ],
+  "Mecha 200": [
+    { km:1000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Mano de obra", p:580, q:1}], diversos:100, total:1068.86 },
+    { km:3000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Mano de obra", p:870, q:1}], diversos:100, total:1568.86 },
+    { km:6000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Mano de obra", p:870, q:1}], diversos:100, total:1568.86 },
+    { km:9000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Bujía", p:350, q:1}, {n:"Líquido de frenos", p:120, q:1}, {n:"Anticongelante", p:120, q:1}, {n:"Mano de obra", p:1450, q:1}], diversos:100, total:2528.86 },
+    { km:12000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Bujía", p:350, q:1}, {n:"Mano de obra", p:870, q:1}], diversos:100, total:1918.86 },
+    { km:15000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Aceite de engranajes reductor", p:500, q:1}, {n:"Mano de obra", p:1160, q:1}], diversos:100, total:2358.86 },
+    { km:18000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Mano de obra", p:870, q:1}], diversos:100, total:1568.86 },
+    { km:21000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Bujía", p:350, q:1}, {n:"Líquido de frenos", p:120, q:1}, {n:"Anticongelante", p:120, q:1}, {n:"Mano de obra", p:1450, q:1}], diversos:100, total:2738.86 },
+    { km:24000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Correa de transmisión", p:2500, q:1}, {n:"Mano de obra", p:1160, q:1}], diversos:100, total:4358.86 },
+    { km:27000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Líquido de frenos", p:120, q:1}, {n:"Mano de obra", p:1276, q:1}], diversos:100, total:2094.86 },
+    { km:30000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Mano de obra", p:1160, q:1}], diversos:100, total:1858.86 },
+    { km:33000, items:[{n:"Aceite de motor", p:388.86, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Bujía", p:350, q:1}, {n:"Aceite de engranajes reductor", p:500, q:1}, {n:"Anticongelante", p:120, q:1}, {n:"Mano de obra", p:1450, q:1}], diversos:100, total:3118.86 },
+  ],
+  "Flygon 250": [
+    { km:1000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Mano de obra", p:580, q:1}], diversos:100, total:1846.58 },
+    { km:3000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aire", p:210, q:1}, {n:"Mano de obra", p:870, q:1}], diversos:100, total:2346.58 },
+    { km:6000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Mano de obra", p:870, q:1}], diversos:100, total:2666.58 },
+    { km:9000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Bujía", p:350, q:2}, {n:"Líquido de frenos", p:120, q:1}, {n:"Anticongelante", p:120, q:2}, {n:"Mano de obra", p:1450, q:1}], diversos:100, total:4096.58 },
+    { km:12000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Bujía", p:350, q:2}, {n:"Mano de obra", p:870, q:1}], diversos:100, total:3366.58 },
+    { km:15000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Mano de obra", p:1160, q:1}], diversos:100, total:2956.58 },
+    { km:18000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Mano de obra", p:870, q:1}], diversos:100, total:2666.58 },
+    { km:21000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Bujía", p:350, q:2}, {n:"Líquido de frenos", p:120, q:1}, {n:"Anticongelante", p:120, q:2}, {n:"Mano de obra", p:1450, q:1}], diversos:100, total:4306.58 },
+    { km:24000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Mano de obra", p:1160, q:1}], diversos:100, total:2956.58 },
+    { km:27000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Líquido de frenos", p:120, q:1}, {n:"Mano de obra", p:1276, q:1}], diversos:100, total:3192.58 },
+    { km:30000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Mano de obra", p:1160, q:1}], diversos:100, total:2956.58 },
+    { km:33000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:210, q:1}, {n:"Bujía", p:350, q:2}, {n:"Anticongelante", p:120, q:2}, {n:"Mano de obra", p:1450, q:1}], diversos:100, total:4186.58 },
+  ],
+  "Punk 500": [
+    { km:1000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Mano de obra", p:580, q:1}], diversos:100, total:2166.58 },
+    { km:3000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:350, q:1}, {n:"Mano de obra", p:1160, q:1}], diversos:100, total:3096.58 },
+    { km:6000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:350, q:1}, {n:"Mano de obra", p:1160, q:1}], diversos:100, total:3096.58 },
+    { km:9000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Bujía", p:535.43, q:2}, {n:"Líquido de frenos", p:120, q:1}, {n:"Anticongelante", p:120, q:2}, {n:"Mano de obra", p:1740, q:1}], diversos:100, total:4757.44 },
+    { km:12000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:350, q:1}, {n:"Bujía", p:535.43, q:2}, {n:"Mano de obra", p:1160, q:1}], diversos:100, total:4167.44 },
+    { km:15000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:350, q:1}, {n:"Mano de obra", p:1160, q:1}], diversos:100, total:3096.58 },
+    { km:18000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:350, q:1}, {n:"Mano de obra", p:1160, q:1}], diversos:100, total:3096.58 },
+    { km:21000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:350, q:1}, {n:"Bujía", p:535.43, q:2}, {n:"Líquido de frenos", p:120, q:1}, {n:"Anticongelante", p:120, q:2}, {n:"Mano de obra", p:2030, q:1}], diversos:100, total:5397.44 },
+    { km:24000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:350, q:1}, {n:"Mano de obra", p:1160, q:1}], diversos:100, total:3096.58 },
+    { km:27000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:350, q:1}, {n:"Líquido de frenos", p:120, q:1}, {n:"Mano de obra", p:1276, q:1}], diversos:100, total:3332.58 },
+    { km:30000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:350, q:1}, {n:"Mano de obra", p:1160, q:1}], diversos:100, total:3096.58 },
+    { km:33000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:350, q:1}, {n:"Bujía", p:535.43, q:2}, {n:"Anticongelante", p:120, q:2}, {n:"Mano de obra", p:2030, q:1}], diversos:100, total:5277.44 },
+  ],
+  "Arthur 700": [
+    { km:1000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Mano de obra", p:580, q:1}], diversos:100, total:2166.58 },
+    { km:3000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:350, q:1}, {n:"Mano de obra", p:1160, q:1}], diversos:100, total:3096.58 },
+    { km:6000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:350, q:1}, {n:"Mano de obra", p:1160, q:1}], diversos:100, total:3096.58 },
+    { km:9000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Bujía", p:535.43, q:2}, {n:"Líquido de frenos", p:120, q:1}, {n:"Anticongelante", p:120, q:2}, {n:"Mano de obra", p:1740, q:1}], diversos:100, total:4757.44 },
+    { km:12000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:350, q:1}, {n:"Bujía", p:535.43, q:2}, {n:"Mano de obra", p:1160, q:1}], diversos:100, total:4167.44 },
+    { km:15000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:350, q:1}, {n:"Mano de obra", p:1160, q:1}], diversos:100, total:3096.58 },
+    { km:18000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:350, q:1}, {n:"Mano de obra", p:1160, q:1}], diversos:100, total:3096.58 },
+    { km:21000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:350, q:1}, {n:"Bujía", p:535.43, q:2}, {n:"Líquido de frenos", p:120, q:1}, {n:"Anticongelante", p:120, q:2}, {n:"Mano de obra", p:2030, q:1}], diversos:100, total:5397.44 },
+    { km:24000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:350, q:1}, {n:"Mano de obra", p:1160, q:1}], diversos:100, total:3096.58 },
+    { km:27000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:350, q:1}, {n:"Líquido de frenos", p:120, q:1}, {n:"Mano de obra", p:1276, q:1}], diversos:100, total:3332.58 },
+    { km:30000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:350, q:1}, {n:"Mano de obra", p:1160, q:1}], diversos:100, total:3096.58 },
+    { km:33000, items:[{n:"Aceite de motor", p:388.86, q:3}, {n:"Filtro de aceite", p:320, q:1}, {n:"Filtro de aire", p:350, q:1}, {n:"Bujía", p:535.43, q:2}, {n:"Anticongelante", p:120, q:2}, {n:"Mano de obra", p:2030, q:1}], diversos:100, total:5277.44 },
+  ],
+};
+function packageBreakdownFor(model, n){
+  const arr = SERVICE_PACKAGE_BREAKDOWN[model];
+  return (arr && arr[n-1] !== undefined) ? arr[n-1] : null;
 }
 
 /* ---- Alertas de vencimiento (basadas en tiempo desde la fecha de compra) ---- */
@@ -3927,6 +4039,7 @@ function renderTallerDashboard(taller){
   if(sub === 'manuales') return renderManualesTaller(taller);
   if(sub === 'formatos') return renderFormatosTaller(taller);
   if(sub === 'precios') return renderPreciosTaller(taller);
+  if(sub === 'desglose') return renderDesglosePaquetes(taller);
   if(sub === 'solicitudes-asignadas') return renderSolicitudesAsignadas(taller);
   return `
   <div class="eyebrow">Panel de taller</div>
@@ -4025,6 +4138,15 @@ function renderTallerDashboard(taller){
         <button class="btn btn-ghost btn-sm" data-taller-nav="precios">Ver precios</button>
       </div>
     </div>
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+        <div>
+          <h3 style="font-family:'Archivo Black'; font-size:15px; margin:0 0 4px;">Desglose de paquetes</h3>
+          <p style="color:var(--text-muted); font-size:12.5px; margin:0;">Refacciones y mano de obra por servicio, referencia interna.</p>
+        </div>
+        <button class="btn btn-ghost btn-sm" data-taller-nav="desglose">Ver desglose</button>
+      </div>
+    </div>
   </div>
 
   <button class="btn btn-ghost btn-sm" id="taller-logout-btn" style="margin-top:24px;">Cerrar sesión</button>
@@ -4043,6 +4165,7 @@ function bindTallerDashboard(){
   if(sub === 'manuales'){ bindManualesTaller(); return; }
   if(sub === 'formatos'){ bindFormatosTaller(); return; }
   if(sub === 'precios'){ bindPreciosTaller(); return; }
+  if(sub === 'desglose'){ bindDesglosePaquetes(); return; }
   if(sub === 'solicitudes-asignadas'){ bindSolicitudesAsignadas(state.tallerAuthed); return; }
   document.querySelectorAll('[data-taller-nav]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
@@ -4232,7 +4355,7 @@ function renderPreciosTaller(taller){
     </select>
   </div>
 
-  <div class="card" style="padding:0; overflow:hidden;">
+  <div class="card" style="padding:0; overflow:hidden; margin-bottom:16px;">
     <div style="overflow-x:auto;">
       <table>
         <thead><tr><th>Servicio</th><th>Programado</th><th>Precio</th><th></th></tr></thead>
@@ -4248,6 +4371,8 @@ function renderPreciosTaller(taller){
       </table>
     </div>
   </div>
+
+  <button class="btn btn-ghost btn-sm" id="ver-desglose-paquetes-link">Ver desglose de refacciones y mano de obra →</button>
   `;
 }
 function bindPreciosTaller(){
@@ -4261,6 +4386,74 @@ function bindPreciosTaller(){
     btn.addEventListener('click', ()=>{
       openServiceInfoModal(Number(btn.dataset.precioInfo), state.preciosTallerModelo || MODELS[0]);
     });
+  });
+  const desgloseLink = document.getElementById('ver-desglose-paquetes-link');
+  if(desgloseLink) desgloseLink.addEventListener('click', ()=>{
+    state.tallerSub = 'desglose';
+    state.desgloseTallerModelo = state.preciosTallerModelo || MODELS[0];
+    render();
+  });
+}
+
+/* ---- Desglose de paquetes de servicio (tabla completa de referencia, para Talleres) ---- */
+function renderDesglosePaquetes(taller){
+  const modelo = state.desgloseTallerModelo || MODELS[0];
+  const packages = SERVICE_PACKAGE_BREAKDOWN[modelo] || [];
+  return `
+  ${tallerBackButton()}
+  <div class="eyebrow">Tabla de precios</div>
+  <h1 class="page-title">Desglose de paquetes de servicio</h1>
+  <p class="page-sub">Refacciones y mano de obra que arman el precio de cada servicio kilometrado. Referencia interna para el taller — el precio final es el mismo que se muestra en "Precios de servicio autorizados".</p>
+
+  <div class="field" style="max-width:320px; margin-bottom:20px;">
+    <label>Modelo</label>
+    <select id="desglose-modelo-select">
+      ${MODELS.map(m => `<option value="${esc(m)}" ${m===modelo?'selected':''}>${esc(m)}</option>`).join('')}
+    </select>
+  </div>
+
+  ${SCHEDULE.map((s, idx) => {
+    const pkg = packages[idx];
+    if(!pkg) return '';
+    return `
+    <div class="card" style="padding:0; overflow:hidden; margin-bottom:16px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; padding:14px 18px; border-bottom:1px solid var(--border); background:var(--surface-2);">
+        <div>
+          <b>Servicio ${s.n}</b>
+          <span style="color:var(--text-muted); font-size:12.5px;"> · ${s.months} meses · ${s.km.toLocaleString('es-MX')} km</span>
+        </div>
+        <span class="mono" style="font-weight:800; color:var(--yellow-ink);">${fmtMoney(pkg.total)}</span>
+      </div>
+      <div style="overflow-x:auto;">
+        <table>
+          <thead><tr><th>Refacción / concepto</th><th>Cantidad</th><th>Precio</th><th>Subtotal</th></tr></thead>
+          <tbody>
+            ${pkg.items.map(it => `
+              <tr>
+                <td>${esc(it.n)}</td>
+                <td>${it.q}</td>
+                <td class="mono">${fmtMoney(it.p)}</td>
+                <td class="mono">${fmtMoney(it.p * it.q)}</td>
+              </tr>`).join('')}
+            <tr>
+              <td>Diversos (insumos varios)</td>
+              <td>1</td>
+              <td class="mono">${fmtMoney(pkg.diversos)}</td>
+              <td class="mono">${fmtMoney(pkg.diversos)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+  }).join('')}
+  `;
+}
+function bindDesglosePaquetes(){
+  bindTallerBack();
+  const select = document.getElementById('desglose-modelo-select');
+  select.addEventListener('change', ()=>{
+    state.desgloseTallerModelo = select.value;
+    render();
   });
 }
 
